@@ -225,6 +225,44 @@ No test framework is currently configured. Quality checks rely on:
 2. Run `npm run prisma:generate` then `npm run prisma:push`.
 3. Update affected service files and types.
 
+## Security Audit (2026-02-14)
+
+### Known Issues
+
+**Critical:**
+- **No authentication on API routes.** All endpoints are unprotected. Add auth middleware before any public deployment.
+- **No authorization checks.** No validation that a requester owns the `project_id` they are accessing.
+- **Plain-text token endpoint.** `/api/tokens/internal/<provider>/token` returns unencrypted service tokens without auth (`app/api/tokens/[...segments]/route.ts:46-52`).
+- **Encryption key fallback.** `lib/crypto.ts:4` generates a random key if `ENCRYPTION_KEY` is unset -- encrypted data is lost on restart. Require the env var instead.
+
+**High:**
+- **Path traversal in asset endpoint.** `app/api/assets/[project_id]/[filename]/route.ts:52` does not validate `[filename]`; `../` sequences allow reading arbitrary files. Use `path.basename()` or `resolveSafePath()` from `lib/services/file-browser.ts`.
+- **Missing security headers.** `next.config.js` has no CSP, HSTS, X-Frame-Options, or X-Content-Type-Options.
+- **No CSRF protection.** State-changing endpoints lack CSRF tokens.
+- **Unsanitized GitHub data in git commands.** `lib/services/github.ts:200,240` embeds `user.login` and tokens in remote URLs without validation. `lib/services/github.ts:194-195` passes `user.name`/`user.email` to `git config` unsanitized.
+- **Error message leakage.** API routes return `error.message` to clients, exposing internal details.
+
+**Medium:**
+- `exec()` used instead of `spawn()` for CLI version checks (`app/api/settings/cli-status/route.ts:47,68,90`).
+- `shell: true` on Windows for preview server spawn (`lib/services/preview.ts:549-554`).
+- AES-256-CBC without authentication; consider AES-256-GCM (`lib/crypto.ts`).
+- Sensitive data may appear in console logs (60+ `console.error`/`console.warn` calls across services).
+
+### Secure Patterns Already In Place
+- No hardcoded secrets; all credentials loaded from env vars or encrypted database.
+- `.env` files properly gitignored.
+- `lib/services/file-browser.ts` has robust `resolveSafePath()` with symlink filtering -- use this pattern for all file access.
+- `highlight.js` + `escapeHtml()` fallback mitigates XSS in code rendering.
+- Production source maps disabled.
+
+### Security Guidelines for Contributors
+- **Always validate file paths** using `resolveSafePath()` from `lib/services/file-browser.ts` before any fs operation with user-controlled input.
+- **Use `spawn()` with array args**, never `exec()` with string interpolation.
+- **Never embed credentials in URLs** or command strings; use environment variables or credential helpers.
+- **Sanitize error responses** -- return generic messages to clients, log details server-side only.
+- **Add Zod validation** at every API boundary for request bodies and query params.
+- **Never set `shell: true`** in `spawn()` unless absolutely required.
+
 ## Important Notes
 
 - The project generates and manages child Next.js projects in `data/projects/`. This directory is gitignored.
