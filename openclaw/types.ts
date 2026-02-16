@@ -33,7 +33,9 @@ export type ToolCapability =
   | 'shell-execution'
   | 'api-integration'
   | 'database-management'
-  | 'monitoring';
+  | 'monitoring'
+  | 'health-monitoring'
+  | 'resource-orchestration';
 
 /** A request to a tool */
 export interface ToolAction {
@@ -123,6 +125,69 @@ export interface HistoryEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Docker Orchestration
+// ---------------------------------------------------------------------------
+
+/** A remote Docker host reachable over TCP with optional TLS mutual auth. */
+export interface RemoteDockerHost {
+  /** Friendly name for this host, e.g. "proxmox-worker" */
+  name: string;
+  /** Docker daemon URL, e.g. "tcp://192.168.1.50:2376" */
+  url: string;
+  /** TLS client certificate path (for mutual auth) */
+  tlsCertPath?: string;
+  /** TLS client key path */
+  tlsKeyPath?: string;
+  /** TLS CA certificate path */
+  tlsCaPath?: string;
+}
+
+/** Hard resource limits enforced by Docker -- OpenClaw cannot override these. */
+export interface DockerResourceLimits {
+  /** Memory limit in MB (maps to --memory) */
+  memoryMb?: number;
+  /** CPU quota as fractional cores, e.g. 1.5 = 1.5 CPUs (maps to --cpus) */
+  cpus?: number;
+  /** Restart policy: 'no' | 'always' | 'unless-stopped' | 'on-failure' */
+  restartPolicy?: 'no' | 'always' | 'unless-stopped' | 'on-failure';
+}
+
+/** Container health check configuration (maps to Docker HEALTHCHECK). */
+export interface DockerHealthCheck {
+  /** Command to run, e.g. ["CMD-SHELL", "curl -f http://localhost/ || exit 1"] */
+  test: string[];
+  /** Interval between checks in seconds (default: 30) */
+  intervalSeconds?: number;
+  /** Timeout for each check in seconds (default: 30) */
+  timeoutSeconds?: number;
+  /** Retries before marking unhealthy (default: 3) */
+  retries?: number;
+  /** Grace period before first check in seconds (default: 0) */
+  startPeriodSeconds?: number;
+}
+
+/** Health status of a running container. */
+export interface ContainerHealthStatus {
+  containerId: string;
+  name: string;
+  status: 'healthy' | 'unhealthy' | 'starting' | 'none' | 'unknown';
+  failingStreak: number;
+  lastOutput?: string;
+}
+
+/** Resource usage snapshot from docker stats. */
+export interface ContainerStats {
+  containerId: string;
+  name: string;
+  cpuPercent: string;
+  memUsage: string;
+  memLimit: string;
+  netIO: string;
+  blockIO: string;
+  pids: string;
+}
+
+// ---------------------------------------------------------------------------
 // Configuration
 // ---------------------------------------------------------------------------
 
@@ -135,8 +200,14 @@ export interface OpenClawConfig {
   };
   /** Docker settings */
   docker?: {
+    /** Local socket path, e.g. /var/run/docker.sock */
     socketPath?: string;
+    /** Default image for new containers */
     defaultImage?: string;
+    /** Remote Docker hosts for multi-host orchestration (e.g. Proxmox VMs) */
+    remoteHosts?: RemoteDockerHost[];
+    /** Default resource limits applied to all containers unless overridden */
+    defaultResourceLimits?: DockerResourceLimits;
   };
   /** Default working directory for new projects */
   workDir: string;

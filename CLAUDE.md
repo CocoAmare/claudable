@@ -289,7 +289,7 @@ Orchestrator (openclaw/agent/orchestrator.ts)
     |   |   |   |
   Tools (openclaw/tools/)
     claudable.ts  -- Dual-path: API for AI generation, direct I/O for file edits
-    docker.ts     -- Container lifecycle via spawn (no shell=true)
+    docker.ts     -- Multi-host container orchestration with resource limits and health monitoring
     filesystem.ts -- Read/write/list/delete with path traversal protection
     git.ts        -- Git operations via spawn with array args
 ```
@@ -298,10 +298,10 @@ Orchestrator (openclaw/agent/orchestrator.ts)
 
 ```
 openclaw/
-  types.ts            # Core type definitions (OpenClawTool, Task, AgentState, Config)
+  types.ts            # Core types: tools, tasks, config, Docker orchestration (RemoteDockerHost, ResourceLimits, etc.)
   index.ts            # Main export: OpenClaw class, tool registration, plugin loading
-  cli.ts              # CLI entry point: commands (tools, status, run, generate, write, logs)
-  config.ts           # Default config, env var overrides, Claudable integration toggle
+  cli.ts              # CLI entry point: commands (tools, status, doctor, run, generate, write, logs)
+  config.ts           # Default config, env var overrides, remote Docker host parsing, resource limit parsing
   agent/
     orchestrator.ts   # Decision engine: task mgmt, tool selection, permission-checked execution
     permissions.ts    # Three-level permission system (allow/prompt/deny) with session memory
@@ -309,7 +309,7 @@ openclaw/
   tools/
     registry.ts       # Singleton tool registry, capability-based discovery
     claudable.ts      # Claudable integration: API calls + direct file I/O with path safety
-    docker.ts         # Docker CLI wrapper using spawn (no shell injection)
+    docker.ts         # Multi-host Docker orchestration: remote hosts, resource limits, health, stats
     filesystem.ts     # Direct file ops scoped to work directory with traversal protection
     git.ts            # Git CLI wrapper using spawn with array args
 ```
@@ -324,15 +324,73 @@ openclaw/
 
 **Configuration:** `openclaw/config.ts` auto-detects Claudable when running inside this repo. Set `OPENCLAW_STANDALONE=1` to disable Claudable integration.
 
+### OpenClaw Docker Orchestration
+
+OpenClaw supports multi-host Docker orchestration for setups like Proxmox where Docker runs in dedicated VMs. The Docker tool can target remote Docker hosts over TCP with optional TLS mutual auth, and enforces resource limits on all containers.
+
+**Architecture (sidecar pattern -- Docker-from-Docker, not Docker-in-Docker):**
+
+```
+Host / Proxmox Hypervisor
+  |
+  +-- VM: OpenClaw Brain
+  |     [OpenClaw Agent Container]
+  |       - Orchestrates via Docker API (TCP or socket)
+  |       - Permission checks on every action
+  |       - Audit logs all container operations
+  |
+  +-- VM: Docker Workers (dedicated to OpenClaw)
+  |     [Claudable Container]   -- AI code generation
+  |     [Project Preview]       -- Live preview servers
+  |     [Plugin Containers]     -- Community tool plugins
+  |
+  +-- VM: Other workloads (isolated from OpenClaw)
+```
+
+**Three layers of control:**
+
+1. **OpenClaw permissions** -- what actions are allowed (software layer, `permissions.ts`)
+2. **Docker resource limits** -- how much any container can consume (`--memory`, `--cpus`)
+3. **Proxmox VM isolation** -- blast radius containment (hardware layer)
+
+**Environment variables:**
+
+| Variable | Format | Example |
+|----------|--------|---------|
+| `OPENCLAW_DOCKER_HOSTS` | `name=url,name2=url2` or `name=url;tlsCert=path;tlsKey=path;tlsCa=path` | `worker=tcp://192.168.1.50:2376` |
+| `OPENCLAW_DOCKER_LIMITS` | `memoryMb=N,cpus=N,restartPolicy=policy` | `memoryMb=512,cpus=1.0,restartPolicy=unless-stopped` |
+| `DOCKER_HOST` | Standard Docker env var | `tcp://192.168.1.50:2376` |
+
+**Docker tool actions:**
+
+| Action | Permission | Description |
+|--------|-----------|-------------|
+| `ps` | allow | List running containers (supports `host` param) |
+| `health` | allow | Check container health status |
+| `stats` | allow | Resource usage snapshot (CPU, memory, I/O) |
+| `hosts` | allow | List all configured Docker hosts |
+| `run` | prompt | Start a container (with resource limits + host targeting) |
+| `build` | prompt | Build a Docker image |
+| `container-action` | prompt | Stop, remove, inspect, or tail logs |
+
 ### OpenClaw CLI Commands
 
 ```bash
 openclaw tools                           # List registered tools and availability
 openclaw status                          # Show agent state and recent activity
+openclaw doctor                          # Run environment diagnostics (tools, hosts, limits)
 openclaw run <tool> <action> '<json>'    # Run a tool action directly
 openclaw generate <projectId> "prompt"   # Generate code via Claudable AI
 openclaw write <projectId> <file>        # Write stdin to a project file
 openclaw logs [count]                    # Show recent audit log entries
+
+# Docker-specific actions:
+openclaw run docker ps '{}'                                # List containers (local)
+openclaw run docker ps '{"host": "proxmox-worker"}'        # List containers on remote host
+openclaw run docker health '{"container": "my-app"}'       # Container health check
+openclaw run docker stats '{}'                             # Resource usage for all containers
+openclaw run docker hosts '{}'                             # List configured Docker hosts
+openclaw run docker run '{"image":"node:20","host":"proxmox-worker","limits":{"memoryMb":512,"cpus":1}}'
 
 # Flags:
 #   --yes, -y    Auto-approve permission prompts (for CI/CD)
@@ -359,6 +417,7 @@ When adding new integrations, use this classification:
 
 - **Data directory:** Both Claudable and OpenClaw default to `data/projects/`. This is intentional -- OpenClaw's direct I/O path reads/writes the same files Claudable manages.
 - **Port:** OpenClaw defaults to `localhost:3000` for Claudable's API (configurable via `CLAUDABLE_URL` or `CLAUDABLE_PORT`).
+- **Docker socket:** Local Docker uses `/var/run/docker.sock`. Remote hosts use TCP (`OPENCLAW_DOCKER_HOSTS`). TLS mutual auth is supported for secure remote connections.
 - **Audit logs:** Written to `data/logs/openclaw-YYYY-MM-DD.jsonl`.
 
 ## Compatibility Notes: Claudable + OpenClaw

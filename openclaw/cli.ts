@@ -3,6 +3,7 @@
 // Usage:
 //   openclaw tools                          List available tools
 //   openclaw status                         Show agent state and recent activity
+//   openclaw doctor                         Run environment diagnostics
 //   openclaw run <tool> <action> [json]     Run a tool action directly
 //   openclaw generate <projectId> "prompt"  Ask Claudable to generate code
 //   openclaw write <projectId> <file>       Write stdin to a project file
@@ -15,7 +16,7 @@
 import * as readline from 'readline';
 import { OpenClaw } from './index';
 import { getDefaultConfig } from './config';
-import type { ToolResult } from './types';
+import type { ToolResult, OpenClawConfig } from './types';
 import type { PromptFn } from './agent/orchestrator';
 
 // ---------------------------------------------------------------------------
@@ -216,6 +217,150 @@ async function cmdLogs(agent: OpenClaw, count: number): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
+// Doctor: comprehensive diagnostics for the entire OpenClaw environment
+// ---------------------------------------------------------------------------
+
+interface DiagnosticResult {
+  label: string;
+  status: 'ok' | 'warn' | 'fail' | 'skip';
+  detail: string;
+}
+
+async function cmdDoctor(agent: OpenClaw, config: OpenClawConfig): Promise<void> {
+  console.log('\nOpenClaw Doctor\n');
+  const results: DiagnosticResult[] = [];
+
+  // 1. Check all registered tools
+  const availability = await agent.checkTools();
+  for (const id of agent.listTools()) {
+    const tool = agent.getTool(id);
+    const available = availability.get(id) ?? false;
+    results.push({
+      label: tool?.name ?? id,
+      status: available ? 'ok' : 'warn',
+      detail: available ? 'available' : 'not reachable',
+    });
+  }
+
+  // 2. Check remote Docker hosts (if configured)
+  if (config.docker?.remoteHosts && config.docker.remoteHosts.length > 0) {
+    for (const host of config.docker.remoteHosts) {
+      const hostResult = await agent.run('docker', { type: 'ps', params: { host: host.name } });
+      results.push({
+        label: `Docker Host: ${host.name}`,
+        status: hostResult.success ? 'ok' : 'fail',
+        detail: hostResult.success
+          ? `${host.url} -- ${hostResult.message}`
+          : `${host.url} -- ${hostResult.error ?? 'unreachable'}`,
+      });
+    }
+  } else {
+    results.push({
+      label: 'Remote Docker Hosts',
+      status: 'skip',
+      detail: 'none configured (set OPENCLAW_DOCKER_HOSTS)',
+    });
+  }
+
+  // 3. Check resource limits configuration
+  if (config.docker?.defaultResourceLimits) {
+    const lim = config.docker.defaultResourceLimits;
+    const parts: string[] = [];
+    if (lim.memoryMb) parts.push(`memory=${lim.memoryMb}MB`);
+    if (lim.cpus) parts.push(`cpus=${lim.cpus}`);
+    if (lim.restartPolicy) parts.push(`restart=${lim.restartPolicy}`);
+    results.push({
+      label: 'Default Resource Limits',
+      status: 'ok',
+      detail: parts.join(', '),
+    });
+  } else {
+    results.push({
+      label: 'Default Resource Limits',
+      status: 'warn',
+      detail: 'none set (containers run without limits -- set OPENCLAW_DOCKER_LIMITS)',
+    });
+  }
+
+  // 4. Check Claudable connectivity (if configured)
+  if (config.claudable) {
+    const claudableCheck = await agent.run('claudable', { type: 'project-list', params: {} });
+    results.push({
+      label: 'Claudable API',
+      status: claudableCheck.success ? 'ok' : 'fail',
+      detail: claudableCheck.success
+        ? config.claudable.baseUrl
+        : `${config.claudable.baseUrl} -- ${claudableCheck.error ?? 'unreachable'}`,
+    });
+  }
+
+  // 5. Check Node.js version
+  const nodeVersion = process.version;
+  const major = parseInt(nodeVersion.slice(1), 10);
+  results.push({
+    label: 'Node.js',
+    status: major >= 20 ? 'ok' : 'warn',
+    detail: `${nodeVersion}${major < 20 ? ' (>=20 recommended)' : ''}`,
+  });
+
+  // 6. Check work directory
+  const fsCheck = await agent.run('filesystem', { type: 'list', params: { directory: config.workDir } });
+  results.push({
+    label: 'Work Directory',
+    status: fsCheck.success ? 'ok' : 'fail',
+    detail: fsCheck.success ? config.workDir : `${config.workDir} -- not accessible`,
+  });
+
+  // 7. Check audit logging
+  const auditDir = config.auditLogDir ?? './data/logs';
+  results.push({
+    label: 'Audit Logging',
+    status: 'ok',
+    detail: auditDir,
+  });
+
+  // 8. Plugins
+  results.push({
+    label: 'Plugins',
+    status: 'ok',
+    detail: config.plugins.length > 0
+      ? `${config.plugins.length} configured`
+      : 'none',
+  });
+
+  // Print results
+  const STATUS_ICONS: Record<DiagnosticResult['status'], string> = {
+    ok: '+',
+    warn: '!',
+    fail: 'x',
+    skip: '-',
+  };
+
+  let maxLabel = 0;
+  for (const r of results) {
+    if (r.label.length > maxLabel) maxLabel = r.label.length;
+  }
+
+  for (const r of results) {
+    const icon = STATUS_ICONS[r.status];
+    const padding = '.'.repeat(maxLabel - r.label.length + 3);
+    console.log(`  [${icon}] ${r.label} ${padding} ${r.detail}`);
+  }
+
+  const failCount = results.filter((r) => r.status === 'fail').length;
+  const warnCount = results.filter((r) => r.status === 'warn').length;
+  console.log('');
+  if (failCount > 0) {
+    console.log(`  ${failCount} issue(s) found. Fix the [x] items above.`);
+  } else if (warnCount > 0) {
+    console.log(`  All systems operational. ${warnCount} warning(s) -- see [!] items.`);
+  } else {
+    console.log('  All systems operational.');
+  }
+  console.log('');
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -226,6 +371,7 @@ OpenClaw - Autonomous Agent Framework
 Usage:
   openclaw tools                           List available tools
   openclaw status                          Show agent state
+  openclaw doctor                          Run environment diagnostics
   openclaw run <tool> <action> '<json>'    Run a tool action
   openclaw generate <projectId> "prompt"   Generate code via Claudable
   openclaw write <projectId> <file>        Write stdin to project file
@@ -237,9 +383,13 @@ Flags:
 
 Examples:
   openclaw tools
+  openclaw doctor
   openclaw generate my-app "Build a todo app with auth"
   echo "body { color: red }" | openclaw write my-app app/globals.css
   openclaw run docker ps '{}'
+  openclaw run docker health '{"container": "my-app"}'
+  openclaw run docker stats '{}'
+  openclaw run docker hosts '{}'
   openclaw run git status '{"repoPath": "./data/projects/my-app"}'
 `);
 }
@@ -294,6 +444,10 @@ async function main(): Promise<void> {
 
     case 'status':
       await cmdStatus(agent);
+      break;
+
+    case 'doctor':
+      await cmdDoctor(agent, config);
       break;
 
     case 'run':

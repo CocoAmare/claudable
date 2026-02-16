@@ -89,8 +89,12 @@ export class OpenClaw {
       });
     }
 
-    // Docker -- always register, availability checked at runtime
-    registerDockerTool();
+    // Docker -- pass config for remote hosts and resource limits
+    registerDockerTool(this.config.docker ? {
+      socketPath: this.config.docker.socketPath,
+      remoteHosts: this.config.docker.remoteHosts,
+      defaultResourceLimits: this.config.docker.defaultResourceLimits,
+    } : undefined);
 
     // Filesystem -- scoped to work directory
     registerFilesystemTool(this.config.workDir);
@@ -217,6 +221,11 @@ export type {
   TaskStatus,
   ProjectContext,
   AgentState,
+  RemoteDockerHost,
+  DockerResourceLimits,
+  DockerHealthCheck,
+  ContainerHealthStatus,
+  ContainerStats,
 } from './types';
 
 export { registry } from './tools/registry';

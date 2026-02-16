@@ -48,6 +48,9 @@ const DEFAULT_RULES: PermissionRule[] = [
   { tool: 'git',        action: 'log',     level: 'allow' },
   { tool: 'git',        action: 'branch',  level: 'allow' },
   { tool: 'docker',     action: 'ps',      level: 'allow' },
+  { tool: 'docker',     action: 'health',  level: 'allow' },
+  { tool: 'docker',     action: 'stats',   level: 'allow' },
+  { tool: 'docker',     action: 'hosts',   level: 'allow' },
 
   // --- Needs confirmation (creates or modifies things) ---
   { tool: 'filesystem', action: 'write',   level: 'prompt', reason: 'Will create or overwrite a file' },
