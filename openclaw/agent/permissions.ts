@@ -52,6 +52,7 @@ const DEFAULT_RULES: PermissionRule[] = [
   { tool: 'docker',     action: 'stats',         level: 'allow' },
   { tool: 'docker',     action: 'hosts',         level: 'allow' },
   { tool: 'docker',     action: 'sandbox-ps',    level: 'allow' },
+  { tool: 'docker',     action: 'doctor',        level: 'allow' },
 
   // --- Needs confirmation (creates or modifies things) ---
   { tool: 'filesystem', action: 'write',   level: 'prompt', reason: 'Will create or overwrite a file' },

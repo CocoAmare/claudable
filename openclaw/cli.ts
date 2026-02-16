@@ -3,7 +3,9 @@
 // Usage:
 //   openclaw tools                          List available tools
 //   openclaw status                         Show agent state and recent activity
-//   openclaw doctor                         Run environment diagnostics
+//   openclaw doctor [--fix]                 Run environment diagnostics
+//   openclaw docker doctor                  Docker-specific diagnostics
+//   openclaw docker <action> [json]         Docker shorthand (ps, health, stats, hosts, ...)
 //   openclaw run <tool> <action> [json]     Run a tool action directly
 //   openclaw generate <projectId> "prompt"  Ask Claudable to generate code
 //   openclaw write <projectId> <file>       Write stdin to a project file
@@ -456,6 +458,64 @@ async function cmdDoctor(agent: OpenClaw, config: OpenClawConfig, fix: boolean):
   console.log('');
 }
 
+// ---------------------------------------------------------------------------
+// Docker subcommands: `openclaw docker doctor`, `openclaw docker ps`, etc.
+// ---------------------------------------------------------------------------
+
+async function cmdDockerDoctor(agent: OpenClaw): Promise<void> {
+  console.log('\nOpenClaw Docker Doctor\n');
+
+  const result = await agent.run('docker', { type: 'doctor', params: {} });
+
+  if (!result.data?.checks) {
+    console.error(`  ${result.error ?? result.message}`);
+    process.exit(1);
+  }
+
+  const checks = result.data.checks as unknown as Array<{ label: string; status: string; detail: string }>;
+
+  const STATUS_ICONS: Record<string, string> = { ok: '+', warn: '!', fail: 'x', skip: '-' };
+  let maxLabel = 0;
+  for (const c of checks) {
+    if (c.label.length > maxLabel) maxLabel = c.label.length;
+  }
+
+  for (const c of checks) {
+    const icon = STATUS_ICONS[c.status] ?? '?';
+    const padding = '.'.repeat(maxLabel - c.label.length + 3);
+    console.log(`  [${icon}] ${c.label} ${padding} ${c.detail}`);
+  }
+
+  console.log(`\n  ${result.message}\n`);
+  process.exit(result.success ? 0 : 1);
+}
+
+async function cmdDocker(agent: OpenClaw, subcommand: string, args: string[]): Promise<void> {
+  switch (subcommand) {
+    case 'doctor':
+      await cmdDockerDoctor(agent);
+      break;
+
+    case 'ps':
+    case 'health':
+    case 'stats':
+    case 'hosts':
+    case 'sandbox-ps':
+    case 'sandbox-run':
+    case 'sandbox-cleanup': {
+      // Delegate to `openclaw run docker <action> <json>`
+      const paramsJson = args[0] ?? '{}';
+      await cmdRun(agent, 'docker', subcommand, paramsJson);
+      break;
+    }
+
+    default:
+      console.error(`Unknown docker subcommand: ${subcommand}`);
+      console.error('Available: doctor, ps, health, stats, hosts, sandbox-ps, sandbox-run, sandbox-cleanup');
+      process.exit(1);
+  }
+}
+
 /** Check if a Docker network exists. */
 async function checkDockerNetwork(name: string): Promise<boolean> {
   const { spawn: spawnProc } = await import('child_process');
@@ -479,7 +539,10 @@ OpenClaw - Autonomous Agent Framework
 Usage:
   openclaw tools                           List available tools
   openclaw status                          Show agent state
-  openclaw doctor                          Run environment diagnostics
+  openclaw doctor                          Run full environment diagnostics
+  openclaw doctor --fix                    Diagnose and auto-fix what it can
+  openclaw docker doctor                   Docker-specific diagnostics
+  openclaw docker <action> [json]          Docker shorthand (ps, health, stats, hosts, ...)
   openclaw run <tool> <action> '<json>'    Run a tool action
   openclaw generate <projectId> "prompt"   Generate code via Claudable
   openclaw write <projectId> <file>        Write stdin to project file
@@ -493,12 +556,15 @@ Flags:
 Examples:
   openclaw tools
   openclaw doctor
+  openclaw docker doctor
+  openclaw docker ps
+  openclaw docker ps '{"host": "proxmox-worker"}'
+  openclaw docker health '{"container": "my-app"}'
+  openclaw docker stats
+  openclaw docker hosts
+  openclaw docker sandbox-ps
   openclaw generate my-app "Build a todo app with auth"
   echo "body { color: red }" | openclaw write my-app app/globals.css
-  openclaw run docker ps '{}'
-  openclaw run docker health '{"container": "my-app"}'
-  openclaw run docker stats '{}'
-  openclaw run docker hosts '{}'
   openclaw run git status '{"repoPath": "./data/projects/my-app"}'
 `);
 }
@@ -558,6 +624,15 @@ async function main(): Promise<void> {
 
     case 'doctor':
       await cmdDoctor(agent, config, flags.has('fix'));
+      break;
+
+    case 'docker':
+      if (positional.length < 2) {
+        console.error('Usage: openclaw docker <subcommand>');
+        console.error('Subcommands: doctor, ps, health, stats, hosts, sandbox-ps, sandbox-run, sandbox-cleanup');
+        process.exit(1);
+      }
+      await cmdDocker(agent, positional[1], positional.slice(2));
       break;
 
     case 'run':

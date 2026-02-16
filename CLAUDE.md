@@ -389,6 +389,7 @@ Host / Proxmox Hypervisor
 | `container-action` | prompt | Stop, remove, inspect, or tail logs |
 | `sandbox-run` | prompt | Start a sandbox container (auto-labeled, auto-limited, isolated network) |
 | `sandbox-cleanup` | prompt | Remove sandbox containers (stopped by default, `force=true` for running) |
+| `doctor` | allow | Docker-specific diagnostics (daemon, hosts, sandbox, limits) |
 
 ### OpenClaw CLI Commands
 
@@ -402,12 +403,16 @@ openclaw generate <projectId> "prompt"   # Generate code via Claudable AI
 openclaw write <projectId> <file>        # Write stdin to a project file
 openclaw logs [count]                    # Show recent audit log entries
 
-# Docker-specific actions:
+# Docker subcommands (shorthand -- no need for `run docker`):
+openclaw docker doctor                                     # Docker-specific diagnostics
+openclaw docker ps                                         # List containers (local)
+openclaw docker ps '{"host": "proxmox-worker"}'            # List containers on remote host
+openclaw docker health '{"container": "my-app"}'           # Container health check
+openclaw docker stats                                      # Resource usage for all containers
+openclaw docker hosts                                      # List configured Docker hosts
+
+# Docker-specific actions (via `run` -- equivalent to above):
 openclaw run docker ps '{}'                                # List containers (local)
-openclaw run docker ps '{"host": "proxmox-worker"}'        # List containers on remote host
-openclaw run docker health '{"container": "my-app"}'       # Container health check
-openclaw run docker stats '{}'                             # Resource usage for all containers
-openclaw run docker hosts '{}'                             # List configured Docker hosts
 openclaw run docker run '{"image":"node:20","host":"proxmox-worker","limits":{"memoryMb":512,"cpus":1}}'
 
 # Sandbox actions (OpenClaw's private Docker ecosystem):

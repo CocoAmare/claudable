@@ -239,6 +239,10 @@ function createDockerTool(config?: DockerToolConfig): OpenClawTool {
           case 'sandbox-cleanup':
             return await handleSandboxCleanup(action.params as unknown as SandboxCleanupParams);
 
+          // --- Diagnostics ---
+          case 'doctor':
+            return await handleDoctor();
+
           default:
             return { success: false, message: `Unknown docker action: ${action.type}` };
         }
@@ -460,6 +464,118 @@ function createDockerTool(config?: DockerToolConfig): OpenClawTool {
       success: true,
       message: `${hosts.length} Docker host(s) configured`,
       data: { hosts: hosts as unknown as Record<string, unknown>[] },
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Docker Doctor (Docker-specific diagnostics)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Comprehensive Docker ecosystem health check.
+   * Checks: local daemon, remote hosts, sandbox, Docker version, resource usage.
+   * Accessible via `openclaw docker doctor` or `openclaw run docker doctor '{}'`.
+   */
+  async function handleDoctor(): Promise<ToolResult> {
+    interface DockerDiagnostic {
+      label: string;
+      status: 'ok' | 'warn' | 'fail' | 'skip';
+      detail: string;
+    }
+
+    const checks: DockerDiagnostic[] = [];
+
+    // 1. Local Docker daemon
+    const { code: infoCode, stdout: infoOut } = await runCommand('docker', ['info', '--format', '{{.ServerVersion}}']);
+    if (infoCode === 0) {
+      checks.push({ label: 'Local Docker', status: 'ok', detail: `Docker ${infoOut}` });
+    } else {
+      checks.push({ label: 'Local Docker', status: 'fail', detail: 'daemon not reachable' });
+    }
+
+    // 2. Docker version
+    const { code: verCode, stdout: verOut } = await runCommand('docker', ['version', '--format', '{{.Client.Version}}']);
+    if (verCode === 0) {
+      checks.push({ label: 'Docker Client', status: 'ok', detail: `v${verOut}` });
+    }
+
+    // 3. Local container count + resource usage
+    if (infoCode === 0) {
+      const psResult = await handlePs();
+      const containerCount = (psResult.data?.containers as unknown[])?.length ?? 0;
+      checks.push({ label: 'Running Containers', status: 'ok', detail: `${containerCount} container(s) on local` });
+    }
+
+    // 4. Remote Docker hosts
+    if (remoteHosts.length > 0) {
+      for (const host of remoteHosts) {
+        const { code: hostCode } = await runCommand('docker', ['info', '--format', '{{.ServerVersion}}'], {
+          host,
+        });
+        checks.push({
+          label: `Remote: ${host.name}`,
+          status: hostCode === 0 ? 'ok' : 'fail',
+          detail: hostCode === 0 ? host.url : `${host.url} -- unreachable`,
+        });
+      }
+    } else {
+      checks.push({ label: 'Remote Hosts', status: 'skip', detail: 'none configured' });
+    }
+
+    // 5. Sandbox
+    if (sandbox?.enabled) {
+      const sandboxHost = getSandboxHost();
+      checks.push({
+        label: `Sandbox (${sandbox.mode})`,
+        status: 'ok',
+        detail: `network=${sandbox.network}, max=${sandbox.maxContainers}, limits=${sandbox.resourceLimits.memoryMb}MB/${sandbox.resourceLimits.cpus}CPU`,
+      });
+
+      // Check sandbox network exists
+      const { code: netCode } = await runCommand('docker', ['network', 'inspect', sandbox.network ?? 'openclaw-sandbox'], {
+        host: sandboxHost,
+      });
+      checks.push({
+        label: 'Sandbox Network',
+        status: netCode === 0 ? 'ok' : 'fail',
+        detail: netCode === 0 ? (sandbox.network ?? 'openclaw-sandbox') : `"${sandbox.network}" does not exist (run: docker network create ${sandbox.network})`,
+      });
+
+      // Count sandbox containers
+      const count = await getSandboxContainerCount();
+      checks.push({
+        label: 'Sandbox Containers',
+        status: count < (sandbox.maxContainers ?? 10) ? 'ok' : 'warn',
+        detail: `${count}/${sandbox.maxContainers} running`,
+      });
+    } else {
+      checks.push({ label: 'Sandbox', status: 'skip', detail: 'not configured' });
+    }
+
+    // 6. Default resource limits
+    if (defaultLimits && Object.keys(defaultLimits).length > 0) {
+      const parts: string[] = [];
+      if (defaultLimits.memoryMb) parts.push(`memory=${defaultLimits.memoryMb}MB`);
+      if (defaultLimits.cpus) parts.push(`cpus=${defaultLimits.cpus}`);
+      if (defaultLimits.restartPolicy) parts.push(`restart=${defaultLimits.restartPolicy}`);
+      checks.push({ label: 'Default Limits', status: 'ok', detail: parts.join(', ') });
+    } else {
+      checks.push({ label: 'Default Limits', status: 'warn', detail: 'none set -- containers run without resource limits' });
+    }
+
+    // Build summary
+    const failCount = checks.filter((c) => c.status === 'fail').length;
+    const warnCount = checks.filter((c) => c.status === 'warn').length;
+    const summary = failCount > 0
+      ? `${failCount} issue(s) found`
+      : warnCount > 0
+        ? `All operational, ${warnCount} warning(s)`
+        : 'All Docker systems operational';
+
+    return {
+      success: failCount === 0,
+      message: summary,
+      data: { checks: checks as unknown as Record<string, unknown>[] },
     };
   }
 
