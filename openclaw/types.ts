@@ -142,6 +142,33 @@ export interface RemoteDockerHost {
   tlsCaPath?: string;
 }
 
+/**
+ * OpenClaw's private Docker sandbox configuration.
+ * When OpenClaw itself runs in a container with DinD, this is the internal
+ * daemon used for disposable workloads (plugin sandboxing, temp builds, tests).
+ * Completely separate from external Docker hosts that run real services.
+ */
+export interface DockerSandboxConfig {
+  /** Whether the sandbox is enabled */
+  enabled: boolean;
+  /**
+   * How OpenClaw talks to the sandbox daemon.
+   * - 'dind': Docker-in-Docker (internal daemon, e.g. /var/run/openclaw-docker.sock)
+   * - 'local': Uses the local Docker daemon with label-based isolation
+   */
+  mode: 'dind' | 'local';
+  /** Socket/URL for the sandbox daemon (defaults to local Docker socket) */
+  socketPath?: string;
+  /** Resource limits applied to ALL sandbox containers (stricter than external defaults) */
+  resourceLimits: DockerResourceLimits;
+  /** Isolated Docker network name for sandbox containers (default: "openclaw-sandbox") */
+  network?: string;
+  /** Auto-remove sandbox containers after they stop (default: true) */
+  autoRemove?: boolean;
+  /** Maximum number of concurrent sandbox containers (default: 10) */
+  maxContainers?: number;
+}
+
 /** Hard resource limits enforced by Docker -- OpenClaw cannot override these. */
 export interface DockerResourceLimits {
   /** Memory limit in MB (maps to --memory) */
@@ -208,6 +235,8 @@ export interface OpenClawConfig {
     remoteHosts?: RemoteDockerHost[];
     /** Default resource limits applied to all containers unless overridden */
     defaultResourceLimits?: DockerResourceLimits;
+    /** OpenClaw's private sandbox environment (DinD or local with label isolation) */
+    sandbox?: DockerSandboxConfig;
   };
   /** Default working directory for new projects */
   workDir: string;

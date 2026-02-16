@@ -89,11 +89,12 @@ export class OpenClaw {
       });
     }
 
-    // Docker -- pass config for remote hosts and resource limits
+    // Docker -- pass config for remote hosts, resource limits, and sandbox
     registerDockerTool(this.config.docker ? {
       socketPath: this.config.docker.socketPath,
       remoteHosts: this.config.docker.remoteHosts,
       defaultResourceLimits: this.config.docker.defaultResourceLimits,
+      sandbox: this.config.docker.sandbox,
     } : undefined);
 
     // Filesystem -- scoped to work directory
@@ -224,6 +225,7 @@ export type {
   RemoteDockerHost,
   DockerResourceLimits,
   DockerHealthCheck,
+  DockerSandboxConfig,
   ContainerHealthStatus,
   ContainerStats,
 } from './types';

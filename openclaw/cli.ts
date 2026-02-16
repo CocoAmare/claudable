@@ -12,6 +12,7 @@
 // Flags:
 //   --yes, -y          Auto-approve all permission prompts
 //   --quiet, -q        Suppress non-essential output
+//   --fix              Auto-fix issues found by doctor
 
 import * as readline from 'readline';
 import { OpenClaw } from './index';
@@ -217,17 +218,19 @@ async function cmdLogs(agent: OpenClaw, count: number): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// Doctor: comprehensive diagnostics for the entire OpenClaw environment
+// Doctor: comprehensive diagnostics with optional --fix auto-remediation
 // ---------------------------------------------------------------------------
 
 interface DiagnosticResult {
   label: string;
   status: 'ok' | 'warn' | 'fail' | 'skip';
   detail: string;
+  /** If fixable, a function that attempts the fix. Only called with --fix. */
+  fix?: () => Promise<string>;
 }
 
-async function cmdDoctor(agent: OpenClaw, config: OpenClawConfig): Promise<void> {
-  console.log('\nOpenClaw Doctor\n');
+async function cmdDoctor(agent: OpenClaw, config: OpenClawConfig, fix: boolean): Promise<void> {
+  console.log(`\nOpenClaw Doctor${fix ? ' (--fix mode)' : ''}\n`);
   const results: DiagnosticResult[] = [];
 
   // 1. Check all registered tools
@@ -262,7 +265,66 @@ async function cmdDoctor(agent: OpenClaw, config: OpenClawConfig): Promise<void>
     });
   }
 
-  // 3. Check resource limits configuration
+  // 3. Check Docker sandbox
+  if (config.docker?.sandbox?.enabled) {
+    const sb = config.docker.sandbox;
+    const sandboxPs = await agent.run('docker', { type: 'sandbox-ps', params: {} });
+    if (sandboxPs.success) {
+      const count = (sandboxPs.data?.containers as unknown[])?.length ?? 0;
+      results.push({
+        label: `Sandbox (${sb.mode})`,
+        status: 'ok',
+        detail: `${count} container(s), network=${sb.network}, max=${sb.maxContainers}`,
+      });
+    } else {
+      results.push({
+        label: `Sandbox (${sb.mode})`,
+        status: 'fail',
+        detail: sandboxPs.error ?? 'sandbox unavailable',
+      });
+    }
+
+    // Check if sandbox network exists
+    const netCheck = await checkDockerNetwork(sb.network ?? 'openclaw-sandbox');
+    if (!netCheck) {
+      results.push({
+        label: 'Sandbox Network',
+        status: 'fail',
+        detail: `network "${sb.network}" does not exist`,
+        fix: async () => {
+          const { spawn: spawnProc } = await import('child_process');
+          return new Promise((resolve) => {
+            const proc = spawnProc('docker', ['network', 'create', sb.network ?? 'openclaw-sandbox'], {
+              stdio: ['ignore', 'pipe', 'pipe'],
+            });
+            let out = '';
+            proc.stdout.on('data', (d: Buffer) => { out += d.toString(); });
+            proc.stderr.on('data', (d: Buffer) => { out += d.toString(); });
+            proc.on('close', (code: number | null) => {
+              resolve(code === 0
+                ? `Created network "${sb.network}"`
+                : `Failed to create network: ${out.trim()}`
+              );
+            });
+          });
+        },
+      });
+    } else {
+      results.push({
+        label: 'Sandbox Network',
+        status: 'ok',
+        detail: sb.network ?? 'openclaw-sandbox',
+      });
+    }
+  } else {
+    results.push({
+      label: 'Docker Sandbox',
+      status: 'skip',
+      detail: 'not configured (set OPENCLAW_SANDBOX=mode=local or mode=dind)',
+    });
+  }
+
+  // 4. Check resource limits configuration
   if (config.docker?.defaultResourceLimits) {
     const lim = config.docker.defaultResourceLimits;
     const parts: string[] = [];
@@ -282,7 +344,7 @@ async function cmdDoctor(agent: OpenClaw, config: OpenClawConfig): Promise<void>
     });
   }
 
-  // 4. Check Claudable connectivity (if configured)
+  // 5. Check Claudable connectivity (if configured)
   if (config.claudable) {
     const claudableCheck = await agent.run('claudable', { type: 'project-list', params: {} });
     results.push({
@@ -294,7 +356,7 @@ async function cmdDoctor(agent: OpenClaw, config: OpenClawConfig): Promise<void>
     });
   }
 
-  // 5. Check Node.js version
+  // 6. Check Node.js version
   const nodeVersion = process.version;
   const major = parseInt(nodeVersion.slice(1), 10);
   results.push({
@@ -303,23 +365,39 @@ async function cmdDoctor(agent: OpenClaw, config: OpenClawConfig): Promise<void>
     detail: `${nodeVersion}${major < 20 ? ' (>=20 recommended)' : ''}`,
   });
 
-  // 6. Check work directory
+  // 7. Check work directory
   const fsCheck = await agent.run('filesystem', { type: 'list', params: { directory: config.workDir } });
   results.push({
     label: 'Work Directory',
     status: fsCheck.success ? 'ok' : 'fail',
     detail: fsCheck.success ? config.workDir : `${config.workDir} -- not accessible`,
+    fix: fsCheck.success ? undefined : async () => {
+      const fsp = await import('fs/promises');
+      await fsp.mkdir(config.workDir, { recursive: true });
+      return `Created ${config.workDir}`;
+    },
   });
 
-  // 7. Check audit logging
+  // 8. Check audit log directory
   const auditDir = config.auditLogDir ?? './data/logs';
+  let auditOk = false;
+  try {
+    const fsp = await import('fs/promises');
+    await fsp.access(auditDir);
+    auditOk = true;
+  } catch { /* doesn't exist */ }
   results.push({
     label: 'Audit Logging',
-    status: 'ok',
-    detail: auditDir,
+    status: auditOk ? 'ok' : 'warn',
+    detail: auditOk ? auditDir : `${auditDir} -- directory missing`,
+    fix: auditOk ? undefined : async () => {
+      const fsp = await import('fs/promises');
+      await fsp.mkdir(auditDir, { recursive: true });
+      return `Created ${auditDir}`;
+    },
   });
 
-  // 8. Plugins
+  // 9. Plugins
   results.push({
     label: 'Plugins',
     status: 'ok',
@@ -344,7 +422,25 @@ async function cmdDoctor(agent: OpenClaw, config: OpenClawConfig): Promise<void>
   for (const r of results) {
     const icon = STATUS_ICONS[r.status];
     const padding = '.'.repeat(maxLabel - r.label.length + 3);
-    console.log(`  [${icon}] ${r.label} ${padding} ${r.detail}`);
+    const fixable = r.fix ? ' [fixable]' : '';
+    console.log(`  [${icon}] ${r.label} ${padding} ${r.detail}${fixable}`);
+  }
+
+  // Auto-fix pass (only with --fix)
+  const fixable = results.filter((r) => r.fix && (r.status === 'fail' || r.status === 'warn'));
+  if (fix && fixable.length > 0) {
+    console.log('\n  Applying fixes:\n');
+    for (const r of fixable) {
+      try {
+        const msg = await r.fix!();
+        console.log(`  [+] ${r.label}: ${msg}`);
+      } catch (err) {
+        console.error(`  [x] ${r.label}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    console.log('');
+  } else if (!fix && fixable.length > 0) {
+    console.log(`\n  ${fixable.length} issue(s) can be auto-fixed. Run: openclaw doctor --fix`);
   }
 
   const failCount = results.filter((r) => r.status === 'fail').length;
@@ -358,6 +454,18 @@ async function cmdDoctor(agent: OpenClaw, config: OpenClawConfig): Promise<void>
     console.log('  All systems operational.');
   }
   console.log('');
+}
+
+/** Check if a Docker network exists. */
+async function checkDockerNetwork(name: string): Promise<boolean> {
+  const { spawn: spawnProc } = await import('child_process');
+  return new Promise((resolve) => {
+    const proc = spawnProc('docker', ['network', 'inspect', name], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    proc.on('close', (code: number | null) => resolve(code === 0));
+    proc.on('error', () => resolve(false));
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -380,6 +488,7 @@ Usage:
 Flags:
   --yes, -y    Auto-approve permission prompts
   --quiet, -q  Suppress non-essential output
+  --fix        Auto-fix issues found by doctor
 
 Examples:
   openclaw tools
@@ -403,6 +512,7 @@ async function main(): Promise<void> {
   for (const arg of args) {
     if (arg === '--yes' || arg === '-y') flags.add('yes');
     else if (arg === '--quiet' || arg === '-q') flags.add('quiet');
+    else if (arg === '--fix') flags.add('fix');
     else if (arg === '--help' || arg === '-h') { printUsage(); process.exit(0); }
     else positional.push(arg);
   }
@@ -447,7 +557,7 @@ async function main(): Promise<void> {
       break;
 
     case 'doctor':
-      await cmdDoctor(agent, config);
+      await cmdDoctor(agent, config, flags.has('fix'));
       break;
 
     case 'run':

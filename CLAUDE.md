@@ -328,16 +328,28 @@ openclaw/
 
 OpenClaw supports multi-host Docker orchestration for setups like Proxmox where Docker runs in dedicated VMs. The Docker tool can target remote Docker hosts over TCP with optional TLS mutual auth, and enforces resource limits on all containers.
 
-**Architecture (sidecar pattern -- Docker-from-Docker, not Docker-in-Docker):**
+OpenClaw operates two distinct Docker layers:
+
+**1. Sandbox (internal):** OpenClaw's private Docker ecosystem for disposable workloads -- plugin sandboxing, temp builds, test environments. Containers are ephemeral, resource-limited, and auto-cleaned. Runs either as Docker-in-Docker (DinD) or via label-based isolation on the local daemon.
+
+**2. External (infrastructure):** Remote Docker hosts that run real services -- Claudable, project previews, persistent workloads. These live on Proxmox VMs or other dedicated Docker hosts, accessed over TCP.
+
+**Architecture (dual-layer Docker):**
 
 ```
 Host / Proxmox Hypervisor
   |
   +-- VM: OpenClaw Brain
   |     [OpenClaw Agent Container]
-  |       - Orchestrates via Docker API (TCP or socket)
+  |       - Internal sandbox daemon (DinD) OR local Docker with label isolation
+  |       - Orchestrates external hosts via Docker API (TCP)
   |       - Permission checks on every action
   |       - Audit logs all container operations
+  |       |
+  |       +-- [Sandbox Containers]  -- plugin isolation, temp builds (ephemeral)
+  |             Labeled: openclaw.sandbox=true
+  |             Network: openclaw-sandbox (isolated)
+  |             Limits: 256MB / 0.5 CPU default
   |
   +-- VM: Docker Workers (dedicated to OpenClaw)
   |     [Claudable Container]   -- AI code generation
@@ -359,6 +371,8 @@ Host / Proxmox Hypervisor
 |----------|--------|---------|
 | `OPENCLAW_DOCKER_HOSTS` | `name=url,name2=url2` or `name=url;tlsCert=path;tlsKey=path;tlsCa=path` | `worker=tcp://192.168.1.50:2376` |
 | `OPENCLAW_DOCKER_LIMITS` | `memoryMb=N,cpus=N,restartPolicy=policy` | `memoryMb=512,cpus=1.0,restartPolicy=unless-stopped` |
+| `OPENCLAW_SANDBOX` | `mode=local\|dind,socket=path,network=name,maxContainers=N` | `mode=local,network=openclaw-sandbox,maxContainers=10` |
+| `OPENCLAW_SANDBOX_LIMITS` | Same format as `OPENCLAW_DOCKER_LIMITS` | `memoryMb=256,cpus=0.5,restartPolicy=no` |
 | `DOCKER_HOST` | Standard Docker env var | `tcp://192.168.1.50:2376` |
 
 **Docker tool actions:**
@@ -368,10 +382,13 @@ Host / Proxmox Hypervisor
 | `ps` | allow | List running containers (supports `host` param) |
 | `health` | allow | Check container health status |
 | `stats` | allow | Resource usage snapshot (CPU, memory, I/O) |
-| `hosts` | allow | List all configured Docker hosts |
+| `hosts` | allow | List all configured Docker hosts (local + remote + sandbox) |
+| `sandbox-ps` | allow | List sandbox containers |
 | `run` | prompt | Start a container (with resource limits + host targeting) |
 | `build` | prompt | Build a Docker image |
 | `container-action` | prompt | Stop, remove, inspect, or tail logs |
+| `sandbox-run` | prompt | Start a sandbox container (auto-labeled, auto-limited, isolated network) |
+| `sandbox-cleanup` | prompt | Remove sandbox containers (stopped by default, `force=true` for running) |
 
 ### OpenClaw CLI Commands
 
@@ -379,6 +396,7 @@ Host / Proxmox Hypervisor
 openclaw tools                           # List registered tools and availability
 openclaw status                          # Show agent state and recent activity
 openclaw doctor                          # Run environment diagnostics (tools, hosts, limits)
+openclaw doctor --fix                    # Diagnose and auto-fix what it can (create dirs, networks)
 openclaw run <tool> <action> '<json>'    # Run a tool action directly
 openclaw generate <projectId> "prompt"   # Generate code via Claudable AI
 openclaw write <projectId> <file>        # Write stdin to a project file
@@ -392,9 +410,16 @@ openclaw run docker stats '{}'                             # Resource usage for 
 openclaw run docker hosts '{}'                             # List configured Docker hosts
 openclaw run docker run '{"image":"node:20","host":"proxmox-worker","limits":{"memoryMb":512,"cpus":1}}'
 
+# Sandbox actions (OpenClaw's private Docker ecosystem):
+openclaw run docker sandbox-run '{"image":"node:20"}'      # Run in sandbox (auto-limited, auto-cleanup)
+openclaw run docker sandbox-ps '{}'                        # List sandbox containers
+openclaw run docker sandbox-cleanup '{}'                   # Remove stopped sandbox containers
+openclaw run docker sandbox-cleanup '{"force": true}'      # Remove ALL sandbox containers
+
 # Flags:
 #   --yes, -y    Auto-approve permission prompts (for CI/CD)
 #   --quiet, -q  Suppress non-essential output
+#   --fix        Auto-fix issues found by doctor
 ```
 
 ### OpenClaw Tool vs Skill Decision Guide

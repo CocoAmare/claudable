@@ -11,6 +11,7 @@ import type {
   ToolCapability,
   RemoteDockerHost,
   DockerResourceLimits,
+  DockerSandboxConfig,
   ContainerHealthStatus,
   ContainerStats,
 } from '../types';
@@ -27,7 +28,14 @@ export interface DockerToolConfig {
   remoteHosts?: RemoteDockerHost[];
   /** Default resource limits applied to all containers */
   defaultResourceLimits?: DockerResourceLimits;
+  /** OpenClaw's private sandbox environment */
+  sandbox?: DockerSandboxConfig;
 }
+
+/** Label applied to all sandbox containers for easy discovery and cleanup. */
+const SANDBOX_LABEL = 'openclaw.sandbox=true';
+/** Prefix for all sandbox container names. */
+const SANDBOX_PREFIX = 'oc-sandbox-';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -143,12 +151,34 @@ interface PsParams {
 }
 
 // ---------------------------------------------------------------------------
+// Sandbox-specific param interfaces
+// ---------------------------------------------------------------------------
+
+interface SandboxRunParams {
+  image: string;
+  name?: string;
+  ports?: string[];
+  volumes?: string[];
+  env?: Record<string, string>;
+  /** Override sandbox resource limits for this specific container */
+  limits?: DockerResourceLimits;
+  /** Command to run (optional, uses image default) */
+  command?: string[];
+}
+
+interface SandboxCleanupParams {
+  /** If true, remove running sandbox containers too (default: only stopped) */
+  force?: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Docker Tool
 // ---------------------------------------------------------------------------
 
 function createDockerTool(config?: DockerToolConfig): OpenClawTool {
   const remoteHosts = config?.remoteHosts ?? [];
   const defaultLimits = config?.defaultResourceLimits;
+  const sandbox = config?.sandbox;
 
   /** Resolve host from name. Throws if host specified but not found. */
   function getHost(name?: string): RemoteDockerHost | undefined {
@@ -160,10 +190,20 @@ function createDockerTool(config?: DockerToolConfig): OpenClawTool {
     return host;
   }
 
+  /** Build a RemoteDockerHost-like object for the sandbox daemon. */
+  function getSandboxHost(): RemoteDockerHost | undefined {
+    if (!sandbox?.enabled) return undefined;
+    if (sandbox.mode === 'dind' && sandbox.socketPath) {
+      return { name: 'sandbox', url: sandbox.socketPath };
+    }
+    // Local mode: no host override, just use label isolation
+    return undefined;
+  }
+
   return {
     id: 'docker',
     name: 'Docker',
-    description: 'Container lifecycle management with multi-host orchestration, resource limits, and health monitoring.',
+    description: 'Container lifecycle management with multi-host orchestration, resource limits, health monitoring, and private sandbox environment.',
     capabilities: ['container-management', 'deployment', 'health-monitoring', 'resource-orchestration'] as ToolCapability[],
 
     async isAvailable(): Promise<boolean> {
@@ -175,6 +215,7 @@ function createDockerTool(config?: DockerToolConfig): OpenClawTool {
     async execute(action: ToolAction): Promise<ToolResult> {
       try {
         switch (action.type) {
+          // --- External / general actions ---
           case 'run':
             return await handleRun(action.params as unknown as ContainerRunParams);
           case 'container-action':
@@ -189,6 +230,15 @@ function createDockerTool(config?: DockerToolConfig): OpenClawTool {
             return await handleStats(action.params as unknown as StatsParams);
           case 'hosts':
             return handleHosts();
+
+          // --- Sandbox actions (OpenClaw's private ecosystem) ---
+          case 'sandbox-run':
+            return await handleSandboxRun(action.params as unknown as SandboxRunParams);
+          case 'sandbox-ps':
+            return await handleSandboxPs();
+          case 'sandbox-cleanup':
+            return await handleSandboxCleanup(action.params as unknown as SandboxCleanupParams);
+
           default:
             return { success: false, message: `Unknown docker action: ${action.type}` };
         }
@@ -396,11 +446,212 @@ function createDockerTool(config?: DockerToolConfig): OpenClawTool {
       { name: 'local', url: config?.socketPath ?? '/var/run/docker.sock', type: 'socket' },
       ...remoteHosts.map((h) => ({ name: h.name, url: h.url, type: 'remote' })),
     ];
+
+    // Include sandbox if configured
+    if (sandbox?.enabled) {
+      hosts.push({
+        name: 'sandbox',
+        url: sandbox.socketPath ?? (config?.socketPath ?? '/var/run/docker.sock'),
+        type: sandbox.mode === 'dind' ? 'sandbox-dind' : 'sandbox-local',
+      });
+    }
+
     return {
       success: true,
       message: `${hosts.length} Docker host(s) configured`,
       data: { hosts: hosts as unknown as Record<string, unknown>[] },
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Sandbox Actions (OpenClaw's private Docker ecosystem)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Run a container in the sandbox. Sandbox containers get:
+   * - Stricter resource limits (default: 256MB, 0.5 CPU)
+   * - Auto-remove on stop (--rm)
+   * - A label for discovery and cleanup (openclaw.sandbox=true)
+   * - Prefixed names (oc-sandbox-*)
+   * - Isolated network (openclaw-sandbox)
+   */
+  async function handleSandboxRun(params: SandboxRunParams): Promise<ToolResult> {
+    if (!sandbox?.enabled) {
+      return { success: false, message: 'Sandbox not configured (set OPENCLAW_SANDBOX=mode=local or mode=dind)' };
+    }
+
+    // Check container count limit
+    const currentCount = await getSandboxContainerCount();
+    if (sandbox.maxContainers && currentCount >= sandbox.maxContainers) {
+      return {
+        success: false,
+        message: `Sandbox container limit reached: ${currentCount}/${sandbox.maxContainers}. Run sandbox-cleanup first.`,
+      };
+    }
+
+    validateImageRef(params.image);
+    const host = getSandboxHost();
+
+    const args = ['run'];
+    if (sandbox.autoRemove !== false) args.push('--rm');
+    args.push('-d'); // always detach sandbox containers
+
+    // Label for discovery
+    args.push('--label', SANDBOX_LABEL);
+
+    // Name with prefix
+    const name = params.name
+      ? `${SANDBOX_PREFIX}${params.name}`
+      : `${SANDBOX_PREFIX}${Date.now()}`;
+    validateContainerId(name);
+    args.push('--name', name);
+
+    // Isolated network
+    if (sandbox.network) {
+      args.push('--network', sandbox.network);
+    }
+
+    if (params.ports) {
+      for (const p of params.ports) args.push('-p', p);
+    }
+    if (params.volumes) {
+      for (const v of params.volumes) args.push('-v', v);
+    }
+    if (params.env) {
+      for (const [k, v] of Object.entries(params.env)) {
+        args.push('-e', `${k}=${v}`);
+      }
+    }
+
+    // Sandbox resource limits: per-container overrides > sandbox defaults
+    const limits = { ...sandbox.resourceLimits, ...params.limits };
+    if (limits.memoryMb && limits.memoryMb > 0) {
+      args.push('--memory', `${limits.memoryMb}m`);
+    }
+    if (limits.cpus && limits.cpus > 0) {
+      args.push('--cpus', String(limits.cpus));
+    }
+    // Sandbox always uses 'no' restart policy unless explicitly overridden
+    args.push('--restart', limits.restartPolicy ?? 'no');
+
+    args.push(params.image);
+    if (params.command) {
+      args.push(...params.command);
+    }
+
+    const { code, stdout, stderr } = await runCommand('docker', args, { host });
+    if (code !== 0) {
+      return { success: false, message: 'sandbox run failed', error: stderr };
+    }
+    const containerId = stdout.slice(0, 12);
+    return {
+      success: true,
+      message: `Sandbox container started: ${name} (${containerId})`,
+      data: {
+        containerId,
+        name,
+        namespace: 'sandbox',
+        limits,
+        network: sandbox.network,
+        autoRemove: sandbox.autoRemove !== false,
+      },
+    };
+  }
+
+  /** List all sandbox containers (running and stopped). */
+  async function handleSandboxPs(): Promise<ToolResult> {
+    if (!sandbox?.enabled) {
+      return { success: false, message: 'Sandbox not configured (set OPENCLAW_SANDBOX=mode=local or mode=dind)' };
+    }
+
+    const host = getSandboxHost();
+    const { code, stdout, stderr } = await runCommand(
+      'docker',
+      ['ps', '-a', '--filter', `label=${SANDBOX_LABEL}`, '--format', '{{.ID}}\t{{.Names}}\t{{.Status}}\t{{.Ports}}'],
+      { host }
+    );
+    if (code !== 0) {
+      return { success: false, message: 'sandbox ps failed', error: stderr };
+    }
+
+    const containers = stdout.split('\n').filter(Boolean).map((line) => {
+      const [id, cname, status, ports] = line.split('\t');
+      return { id, name: cname, status, ports };
+    });
+
+    return {
+      success: true,
+      message: `${containers.length} sandbox container(s)`,
+      data: {
+        containers,
+        namespace: 'sandbox',
+        maxContainers: sandbox.maxContainers,
+      },
+    };
+  }
+
+  /** Remove sandbox containers. By default only stopped, with force=true also running. */
+  async function handleSandboxCleanup(params?: SandboxCleanupParams): Promise<ToolResult> {
+    if (!sandbox?.enabled) {
+      return { success: false, message: 'Sandbox not configured (set OPENCLAW_SANDBOX=mode=local or mode=dind)' };
+    }
+
+    const host = getSandboxHost();
+    const force = params?.force ?? false;
+
+    // Find sandbox containers
+    const filterArgs = ['ps', '-a', '--filter', `label=${SANDBOX_LABEL}`, '--format', '{{.ID}}\t{{.Status}}'];
+    const { code: listCode, stdout: listOut } = await runCommand('docker', filterArgs, { host });
+    if (listCode !== 0) {
+      return { success: false, message: 'Failed to list sandbox containers' };
+    }
+
+    const lines = listOut.split('\n').filter(Boolean);
+    const toRemove: string[] = [];
+    for (const line of lines) {
+      const [id, status] = line.split('\t');
+      if (!id) continue;
+      const isRunning = status?.startsWith('Up');
+      if (force || !isRunning) {
+        toRemove.push(id);
+      }
+    }
+
+    if (toRemove.length === 0) {
+      return { success: true, message: 'No sandbox containers to clean up', data: { removed: 0 } };
+    }
+
+    // Stop running containers first if force
+    if (force) {
+      const running = lines.filter((l) => l.split('\t')[1]?.startsWith('Up')).map((l) => l.split('\t')[0]);
+      if (running.length > 0) {
+        await runCommand('docker', ['stop', ...running.filter(Boolean) as string[]], { host });
+      }
+    }
+
+    // Remove containers
+    const { code: rmCode, stderr: rmErr } = await runCommand('docker', ['rm', ...toRemove], { host });
+    if (rmCode !== 0) {
+      return { success: false, message: 'sandbox cleanup failed', error: rmErr };
+    }
+
+    return {
+      success: true,
+      message: `Removed ${toRemove.length} sandbox container(s)`,
+      data: { removed: toRemove.length, forced: force },
+    };
+  }
+
+  /** Count currently running sandbox containers. */
+  async function getSandboxContainerCount(): Promise<number> {
+    const host = getSandboxHost();
+    const { code, stdout } = await runCommand(
+      'docker',
+      ['ps', '--filter', `label=${SANDBOX_LABEL}`, '--format', '{{.ID}}'],
+      { host }
+    );
+    if (code !== 0) return 0;
+    return stdout.split('\n').filter(Boolean).length;
   }
 }
 

@@ -4,7 +4,7 @@
 
 import * as path from 'path';
 import { fileURLToPath } from 'url';
-import type { OpenClawConfig, RemoteDockerHost, DockerResourceLimits } from './types';
+import type { OpenClawConfig, RemoteDockerHost, DockerResourceLimits, DockerSandboxConfig } from './types';
 
 /** Resolve the directory of this file, compatible with both CJS and ESM. */
 const _thisDir = typeof __dirname !== 'undefined'
@@ -71,6 +71,47 @@ function parseResourceLimits(raw: string): DockerResourceLimits {
 }
 
 /**
+ * Parse sandbox configuration from OPENCLAW_SANDBOX env var.
+ * Format: "mode=dind,socket=/var/run/openclaw-docker.sock,network=oc-sandbox,maxContainers=10"
+ * Or simply: "mode=local" to use the local Docker daemon with label isolation.
+ * Limits are inherited from OPENCLAW_SANDBOX_LIMITS or defaults to 256MB / 0.5 CPU.
+ */
+function parseSandboxConfig(raw: string, limitsRaw?: string): DockerSandboxConfig {
+  const sandbox: DockerSandboxConfig = {
+    enabled: true,
+    mode: 'local',
+    resourceLimits: { memoryMb: 256, cpus: 0.5, restartPolicy: 'no' },
+    network: 'openclaw-sandbox',
+    autoRemove: true,
+    maxContainers: 10,
+  };
+
+  for (const pair of raw.split(',').map((s: string) => s.trim()).filter(Boolean)) {
+    const [key, val] = pair.split('=');
+    if (!key || !val) continue;
+    if (key === 'mode' && (val === 'dind' || val === 'local')) {
+      sandbox.mode = val;
+    } else if (key === 'socket') {
+      sandbox.socketPath = val;
+    } else if (key === 'network') {
+      sandbox.network = val;
+    } else if (key === 'maxContainers') {
+      const n = parseInt(val, 10);
+      if (n > 0 && n <= 100) sandbox.maxContainers = n;
+    } else if (key === 'autoRemove') {
+      sandbox.autoRemove = val !== 'false' && val !== '0';
+    }
+  }
+
+  // Override sandbox resource limits if provided separately
+  if (limitsRaw) {
+    sandbox.resourceLimits = { ...sandbox.resourceLimits, ...parseResourceLimits(limitsRaw) };
+  }
+
+  return sandbox;
+}
+
+/**
  * Default configuration when running inside the Claudable repo.
  * Set OPENCLAW_STANDALONE=1 to skip Claudable integration.
  */
@@ -108,6 +149,14 @@ export function getDefaultConfig(): OpenClawConfig {
     // Default resource limits for all containers
     if (process.env.OPENCLAW_DOCKER_LIMITS) {
       config.docker.defaultResourceLimits = parseResourceLimits(process.env.OPENCLAW_DOCKER_LIMITS);
+    }
+
+    // Sandbox environment (OpenClaw's private Docker ecosystem)
+    if (process.env.OPENCLAW_SANDBOX) {
+      config.docker.sandbox = parseSandboxConfig(
+        process.env.OPENCLAW_SANDBOX,
+        process.env.OPENCLAW_SANDBOX_LIMITS
+      );
     }
   }
 

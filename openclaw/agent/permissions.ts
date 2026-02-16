@@ -47,10 +47,11 @@ const DEFAULT_RULES: PermissionRule[] = [
   { tool: 'git',        action: 'status',  level: 'allow' },
   { tool: 'git',        action: 'log',     level: 'allow' },
   { tool: 'git',        action: 'branch',  level: 'allow' },
-  { tool: 'docker',     action: 'ps',      level: 'allow' },
-  { tool: 'docker',     action: 'health',  level: 'allow' },
-  { tool: 'docker',     action: 'stats',   level: 'allow' },
-  { tool: 'docker',     action: 'hosts',   level: 'allow' },
+  { tool: 'docker',     action: 'ps',            level: 'allow' },
+  { tool: 'docker',     action: 'health',        level: 'allow' },
+  { tool: 'docker',     action: 'stats',         level: 'allow' },
+  { tool: 'docker',     action: 'hosts',         level: 'allow' },
+  { tool: 'docker',     action: 'sandbox-ps',    level: 'allow' },
 
   // --- Needs confirmation (creates or modifies things) ---
   { tool: 'filesystem', action: 'write',   level: 'prompt', reason: 'Will create or overwrite a file' },
@@ -64,6 +65,9 @@ const DEFAULT_RULES: PermissionRule[] = [
   { tool: 'git',        action: 'init',    level: 'prompt', reason: 'Will initialize a git repository' },
   { tool: 'docker',     action: 'run',     level: 'prompt', reason: 'Will start a new container' },
   { tool: 'docker',     action: 'build',   level: 'prompt', reason: 'Will build a Docker image' },
+
+  { tool: 'docker',     action: 'sandbox-run',     level: 'prompt', reason: 'Will start a sandbox container' },
+  { tool: 'docker',     action: 'sandbox-cleanup', level: 'prompt', reason: 'Will remove sandbox containers' },
 
   // --- Destructive container actions need confirmation ---
   { tool: 'docker', action: 'container-action', level: 'prompt', reason: 'Will modify a running container' },
