@@ -8,6 +8,7 @@
 //   await agent.run('claudable', { type: 'generate', params: { ... } });
 
 import { Orchestrator } from './agent/orchestrator';
+import type { PromptFn } from './agent/orchestrator';
 import { registry } from './tools/registry';
 import { registerClaudableTool } from './tools/claudable';
 import { registerDockerTool } from './tools/docker';
@@ -41,18 +42,26 @@ export class OpenClaw {
   private orchestrator: Orchestrator;
   private config: OpenClawConfig;
 
-  private constructor(config: OpenClawConfig) {
+  private constructor(config: OpenClawConfig, promptFn?: PromptFn, autoApprove?: boolean) {
     this.config = config;
-    this.orchestrator = new Orchestrator();
+    this.orchestrator = new Orchestrator({
+      auditLogDir: config.auditLogDir ?? './data/logs',
+      promptFn,
+      autoApprove,
+    });
   }
 
   /**
    * Create and initialize an OpenClaw agent.
    * Registers built-in tools and loads any plugins from config.
    */
-  static async create(userConfig: Partial<OpenClawConfig> = {}): Promise<OpenClaw> {
-    const config: OpenClawConfig = { ...DEFAULT_CONFIG, ...userConfig };
-    const agent = new OpenClaw(config);
+  static async create(options: {
+    config?: Partial<OpenClawConfig>;
+    promptFn?: PromptFn;
+    autoApprove?: boolean;
+  } = {}): Promise<OpenClaw> {
+    const config: OpenClawConfig = { ...DEFAULT_CONFIG, ...options.config };
+    const agent = new OpenClaw(config, options.promptFn, options.autoApprove);
 
     // Register built-in tools
     agent.registerBuiltins();
@@ -171,6 +180,11 @@ export class OpenClaw {
   getTool(id: string): OpenClawTool | undefined {
     return registry.get(id);
   }
+
+  /** Clean shutdown: flush audit logs. */
+  async shutdown(): Promise<void> {
+    await this.orchestrator.shutdown();
+  }
 }
 
 // Re-export types for consumers
@@ -188,3 +202,6 @@ export type {
 
 export { registry } from './tools/registry';
 export { Orchestrator } from './agent/orchestrator';
+export type { PromptFn } from './agent/orchestrator';
+export { PermissionManager } from './agent/permissions';
+export { AuditLogger } from './agent/audit';

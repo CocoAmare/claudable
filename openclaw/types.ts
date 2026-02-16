@@ -144,4 +144,6 @@ export interface OpenClawConfig {
   logLevel: 'debug' | 'info' | 'warn' | 'error';
   /** Registered tool module paths (for community plugins) */
   plugins: string[];
+  /** Directory for audit log files */
+  auditLogDir?: string;
 }

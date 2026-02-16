@@ -1,8 +1,11 @@
 // OpenClaw Orchestrator
 // The decision engine. Takes a user intent, breaks it into tasks,
 // picks the right tools, executes, and tracks state.
+// Now with permissions (ask before dangerous actions) and audit logging.
 
 import { registry } from '../tools/registry';
+import { PermissionManager } from './permissions';
+import { AuditLogger } from './audit';
 import type {
   AgentState,
   Task,
@@ -14,6 +17,16 @@ import type {
   ProjectContext,
   OpenClawTool,
 } from '../types';
+
+// ---------------------------------------------------------------------------
+// Types
+// ---------------------------------------------------------------------------
+
+/**
+ * When a permission check returns 'prompt', the orchestrator calls this
+ * function to ask the user. The CLI provides the implementation.
+ */
+export type PromptFn = (tool: string, action: string, reason: string) => Promise<boolean>;
 
 // ---------------------------------------------------------------------------
 // Task ID generation
@@ -28,7 +41,6 @@ function nextTaskId(): string {
 // Routing rules: intent → capability → tool
 // ---------------------------------------------------------------------------
 
-/** Map high-level intents to the capabilities needed. */
 const INTENT_ROUTES: Record<string, ToolCapability[]> = {
   'build-web-app':    ['web-app-generation'],
   'edit-file':        ['file-write'],
@@ -46,15 +58,35 @@ const INTENT_ROUTES: Record<string, ToolCapability[]> = {
 // Orchestrator
 // ---------------------------------------------------------------------------
 
+export interface OrchestratorOptions {
+  /** Directory for audit log files */
+  auditLogDir?: string;
+  /** Function to prompt user for permission (provided by CLI) */
+  promptFn?: PromptFn;
+  /** Auto-approve all actions (for CI/automated use -- careful!) */
+  autoApprove?: boolean;
+}
+
 export class Orchestrator {
   private state: AgentState;
+  readonly permissions: PermissionManager;
+  readonly audit: AuditLogger;
+  private promptFn: PromptFn | null;
 
-  constructor() {
+  constructor(options: OrchestratorOptions = {}) {
     this.state = {
       tasks: [],
       availableTools: [],
       history: [],
     };
+
+    this.permissions = new PermissionManager();
+    if (options.autoApprove) {
+      this.permissions.setAutoApprove(true);
+    }
+
+    this.audit = new AuditLogger(options.auditLogDir ?? './data/logs');
+    this.promptFn = options.promptFn ?? null;
   }
 
   /** Refresh which tools are actually available right now. */
@@ -83,7 +115,6 @@ export class Orchestrator {
   // Task Management
   // -------------------------------------------------------------------------
 
-  /** Create a new task and add it to the queue. */
   createTask(description: string, toolHint?: string): Task {
     const task: Task = {
       id: nextTaskId(),
@@ -97,7 +128,6 @@ export class Orchestrator {
     return task;
   }
 
-  /** Update a task's status. */
   updateTask(taskId: string, status: TaskStatus, result?: ToolResult): void {
     const task = this.state.tasks.find((t) => t.id === taskId);
     if (task) {
@@ -107,7 +137,6 @@ export class Orchestrator {
     }
   }
 
-  /** Get all tasks with a given status. */
   getTasksByStatus(status: TaskStatus): Task[] {
     return this.state.tasks.filter((t) => t.status === status);
   }
@@ -116,16 +145,7 @@ export class Orchestrator {
   // Tool Selection
   // -------------------------------------------------------------------------
 
-  /**
-   * Pick the best tool for an intent.
-   *
-   * Priority:
-   * 1. Explicit tool hint on the task
-   * 2. Capability-based routing via INTENT_ROUTES
-   * 3. First available tool with any matching capability
-   */
   selectTool(intent: string, toolHint?: string): OpenClawTool | null {
-    // Explicit hint
     if (toolHint) {
       const tool = registry.get(toolHint);
       if (tool && this.state.availableTools.includes(toolHint)) {
@@ -133,7 +153,6 @@ export class Orchestrator {
       }
     }
 
-    // Capability-based routing
     const requiredCapabilities = INTENT_ROUTES[intent];
     if (requiredCapabilities) {
       for (const cap of requiredCapabilities) {
@@ -149,16 +168,120 @@ export class Orchestrator {
   }
 
   // -------------------------------------------------------------------------
-  // Execution
+  // Permission-Checked Execution
   // -------------------------------------------------------------------------
 
   /**
-   * Execute a single task: select tool, run action, record result.
+   * Check permissions, prompt if needed, execute, and audit log.
+   * This is the main entry point for all tool actions.
+   */
+  private async checkedExecute(
+    toolId: string,
+    tool: OpenClawTool,
+    action: ToolAction
+  ): Promise<ToolResult> {
+    const startTime = Date.now();
+
+    // 1. Check permissions
+    const permCheck = this.permissions.check({
+      tool: toolId,
+      action: action.type,
+      params: action.params,
+    });
+
+    if (permCheck.level === 'deny') {
+      const result: ToolResult = {
+        success: false,
+        message: `Action denied: ${permCheck.reason ?? 'not permitted'}`,
+      };
+      await this.audit.log({
+        tool: toolId,
+        action: action.type,
+        permissionLevel: 'deny',
+        success: false,
+        message: result.message,
+        params: action.params,
+      });
+      return result;
+    }
+
+    if (permCheck.level === 'prompt' && !permCheck.allowed) {
+      // Ask the user
+      if (this.promptFn) {
+        const reason = permCheck.reason ?? `${toolId}:${action.type} requires approval`;
+        const approved = await this.promptFn(toolId, action.type, reason);
+        if (!approved) {
+          const result: ToolResult = {
+            success: false,
+            message: 'Action cancelled by user',
+          };
+          await this.audit.log({
+            tool: toolId,
+            action: action.type,
+            permissionLevel: 'deny',
+            success: false,
+            message: result.message,
+            params: action.params,
+          });
+          return result;
+        }
+        // Remember approval for this session
+        this.permissions.approveForSession(toolId, action.type);
+      }
+      // If no promptFn, fall through and allow (better than silently blocking)
+    }
+
+    // 2. Execute
+    const effectivePermLevel = permCheck.level === 'allow' ? 'allow' : 'prompt';
+
+    try {
+      const result = await tool.execute(action);
+      const durationMs = Date.now() - startTime;
+
+      // 3. Audit log
+      await this.audit.log({
+        tool: toolId,
+        action: action.type,
+        permissionLevel: effectivePermLevel,
+        success: result.success,
+        message: result.message,
+        params: action.params,
+        durationMs,
+        error: result.error,
+      });
+
+      this.recordHistory(action.type, toolId, result);
+      return result;
+    } catch (err) {
+      const durationMs = Date.now() - startTime;
+      const result: ToolResult = {
+        success: false,
+        message: `Tool ${toolId} threw an error`,
+        error: err instanceof Error ? err.message : String(err),
+      };
+
+      await this.audit.log({
+        tool: toolId,
+        action: action.type,
+        permissionLevel: effectivePermLevel,
+        success: false,
+        message: result.message,
+        params: action.params,
+        durationMs,
+        error: result.error,
+      });
+
+      this.recordHistory(action.type, toolId, result);
+      return result;
+    }
+  }
+
+  /**
+   * Execute a single task: select tool, check permissions, run, audit.
    */
   async executeTask(task: Task, action: ToolAction): Promise<ToolResult> {
     this.updateTask(task.id, 'in_progress');
 
-    // Determine intent from action type for routing
     const tool = this.selectTool(action.type, task.toolHint);
     if (!tool) {
       const result: ToolResult = {
@@ -170,26 +293,13 @@ export class Orchestrator {
       return result;
     }
 
-    try {
-      const result = await tool.execute(action);
-      this.updateTask(task.id, result.success ? 'completed' : 'failed', result);
-      this.recordHistory(action.type, tool.id, result);
-      return result;
-    } catch (err) {
-      const result: ToolResult = {
-        success: false,
-        message: `Tool ${tool.id} threw an error`,
-        error: err instanceof Error ? err.message : String(err),
-      };
-      this.updateTask(task.id, 'failed', result);
-      this.recordHistory(action.type, tool.id, result);
-      return result;
-    }
+    const result = await this.checkedExecute(tool.id, tool, action);
+    this.updateTask(task.id, result.success ? 'completed' : 'failed', result);
+    return result;
   }
 
   /**
-   * Run an action directly against a specific tool (bypass routing).
-   * For when you know exactly which tool you want.
+   * Run directly against a specific tool (with permission checks).
    */
   async runDirect(toolId: string, action: ToolAction): Promise<ToolResult> {
     const tool = registry.get(toolId);
@@ -197,19 +307,7 @@ export class Orchestrator {
       return { success: false, message: `Tool not found: ${toolId}` };
     }
 
-    try {
-      const result = await tool.execute(action);
-      this.recordHistory(action.type, toolId, result);
-      return result;
-    } catch (err) {
-      const result: ToolResult = {
-        success: false,
-        message: `Tool ${toolId} threw an error`,
-        error: err instanceof Error ? err.message : String(err),
-      };
-      this.recordHistory(action.type, toolId, result);
-      return result;
-    }
+    return this.checkedExecute(toolId, tool, action);
   }
 
   // -------------------------------------------------------------------------
@@ -226,14 +324,17 @@ export class Orchestrator {
     };
     this.state.history.push(entry);
 
-    // Keep history bounded
     if (this.state.history.length > 200) {
       this.state.history = this.state.history.slice(-100);
     }
   }
 
-  /** Get recent history entries. */
   getHistory(limit = 20): HistoryEntry[] {
     return this.state.history.slice(-limit);
+  }
+
+  /** Flush audit logs on shutdown. */
+  async shutdown(): Promise<void> {
+    await this.audit.shutdown();
   }
 }
