@@ -43,7 +43,13 @@ function redactParams(params: Record<string, unknown>): Record<string, unknown> 
     const lowerKey = key.toLowerCase();
     if (SENSITIVE_KEYS.has(lowerKey) || lowerKey.includes('token') || lowerKey.includes('secret')) {
       redacted[key] = '[REDACTED]';
-    } else if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    } else if (Array.isArray(value)) {
+      redacted[key] = value.map((item) =>
+        typeof item === 'object' && item !== null
+          ? redactParams(item as Record<string, unknown>)
+          : item
+      );
+    } else if (typeof value === 'object' && value !== null) {
       redacted[key] = redactParams(value as Record<string, unknown>);
     } else {
       redacted[key] = value;

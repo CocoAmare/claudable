@@ -273,13 +273,16 @@ async function main(): Promise<void> {
     autoApprove,
   });
 
-  // Handle shutdown
+  // Handle shutdown -- ensure audit logs flush before exit
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     await agent.shutdown();
     process.exit(0);
   };
-  process.on('SIGINT', () => { shutdown(); });
-  process.on('SIGTERM', () => { shutdown(); });
+  process.on('SIGINT', () => { void shutdown(); });
+  process.on('SIGTERM', () => { void shutdown(); });
 
   // Route command
   const command = positional[0];

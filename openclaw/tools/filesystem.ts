@@ -38,11 +38,8 @@ interface ListParams {
   recursive?: boolean;
 }
 
-interface SearchParams {
-  path: string;
-  pattern: string;
-  glob?: string;
-}
+/** Max directory depth for recursive delete safety. */
+const MAX_DELETE_DEPTH = 10;
 
 function createFilesystemTool(workDir: string): OpenClawTool {
   return {
@@ -118,11 +115,25 @@ function createFilesystemTool(workDir: string): OpenClawTool {
   async function handleList(params: ListParams): Promise<ToolResult> {
     try {
       const fullPath = safePath(workDir, params.path);
+      const resolvedRoot = path.resolve(workDir);
       const entries = await fs.readdir(fullPath, { withFileTypes: true });
-      const items = entries.map((e: { name: string; isDirectory(): boolean }) => ({
-        name: e.name,
-        type: e.isDirectory() ? 'directory' : 'file',
-      }));
+      const items: { name: string; type: string }[] = [];
+      for (const e of entries) {
+        if (e.isSymbolicLink()) {
+          // Resolve symlink target and skip if it points outside the work directory
+          try {
+            const target = await fs.realpath(path.join(fullPath, e.name));
+            if (!target.startsWith(resolvedRoot + path.sep) && target !== resolvedRoot) {
+              continue; // symlink escapes work directory -- hide it
+            }
+          } catch {
+            continue; // broken symlink -- skip
+          }
+          items.push({ name: e.name, type: 'symlink' });
+        } else {
+          items.push({ name: e.name, type: e.isDirectory() ? 'directory' : 'file' });
+        }
+      }
       return {
         success: true,
         message: `Listed ${items.length} entries in ${params.path}`,
@@ -160,7 +171,12 @@ function createFilesystemTool(workDir: string): OpenClawTool {
       const fullPath = safePath(workDir, params.path);
       const stat = await fs.stat(fullPath);
       if (stat.isDirectory()) {
-        await fs.rm(fullPath, { recursive: true });
+        // Guard against accidentally deleting deeply nested trees
+        const depth = params.path.split(path.sep).filter(Boolean).length;
+        if (depth < 1) {
+          return { success: false, message: 'Refusing to delete the work directory root' };
+        }
+        await fs.rm(fullPath, { recursive: true, maxRetries: 0 });
       } else {
         await fs.unlink(fullPath);
       }

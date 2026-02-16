@@ -7,6 +7,7 @@
 //   const agent = await OpenClaw.create({ workDir: '/path/to/work' });
 //   await agent.run('claudable', { type: 'generate', params: { ... } });
 
+import * as path from 'path';
 import { Orchestrator } from './agent/orchestrator';
 import type { PromptFn } from './agent/orchestrator';
 import { registry } from './tools/registry';
@@ -103,11 +104,29 @@ export class OpenClaw {
     registry.register(tool);
   }
 
-  /** Load plugin modules from config.plugins paths. */
+  /**
+   * Load plugin modules from config.plugins paths.
+   * Paths must be absolute and resolve to a location within the work directory
+   * or the user's home-level plugins directory (~/.openclaw/plugins/).
+   */
   private async loadPlugins(): Promise<void> {
+    const allowedRoots = [
+      path.resolve(this.config.workDir),
+      path.resolve(process.env.HOME ?? process.env.USERPROFILE ?? '/', '.openclaw', 'plugins'),
+    ];
+
     for (const pluginPath of this.config.plugins) {
+      const resolved = path.resolve(pluginPath);
+      const inAllowedRoot = allowedRoots.some(
+        (root) => resolved.startsWith(root + path.sep) || resolved === root
+      );
+      if (!inAllowedRoot) {
+        console.error(`[OpenClaw] Plugin path rejected (outside allowed roots): ${pluginPath}`);
+        continue;
+      }
+
       try {
-        const mod = await import(pluginPath);
+        const mod = await import(resolved);
         if (typeof mod.register === 'function') {
           mod.register(registry);
           console.log(`[OpenClaw] Loaded plugin: ${pluginPath}`);

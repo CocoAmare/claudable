@@ -366,7 +366,7 @@ When adding new integrations, use this classification:
 ### TypeScript
 - OpenClaw files are included in `tsconfig.json` via the `**/*.ts` glob pattern. They are NOT excluded.
 - OpenClaw's Node.js-specific code (`process`, `Buffer`, `__dirname`, `spawn`, `fs/promises`) requires `@types/node` from devDependencies.
-- **Known issue:** `openclaw/config.ts` uses `__dirname`, which is not available in ESM (`"module": "esnext"` in tsconfig). This works at runtime when transpiled by Next.js for server-side execution, but is a type-check concern. A future fix could use `import.meta.url` + `fileURLToPath` or a separate tsconfig for the OpenClaw CLI.
+- `openclaw/config.ts` uses a CJS/ESM dual-compatible pattern for `__dirname` resolution (`typeof __dirname !== 'undefined'` fallback to `import.meta.url`), so it works in both Next.js transpiled and ESM-native contexts.
 
 ### Build & Dependency
 - OpenClaw has no additional dependencies beyond what's in `package.json`. It uses Node.js built-ins (`fs`, `path`, `child_process`, `readline`) and the global `fetch` API (Node 18+).
@@ -398,25 +398,25 @@ When adding new integrations, use this classification:
 - AES-256-CBC without authentication; consider AES-256-GCM (`lib/crypto.ts`).
 - Sensitive data may appear in console logs (60+ `console.error`/`console.warn` calls across services).
 
-### OpenClaw -- New Issues (2026-02-16)
+### OpenClaw -- Issues Found 2026-02-16 (all resolved)
 
-**High:**
-- **Dynamic import from env var.** `openclaw/index.ts:110` uses `await import(pluginPath)` where paths come from `OPENCLAW_PLUGINS` env var. An attacker who controls that env var can execute arbitrary code. Document that this env var must be trusted, or validate paths against an allowlist.
-- **Session wildcard approval bug.** `openclaw/agent/permissions.ts:132-134` -- `approveToolForSession(tool)` stores `tool:*` in the session approvals set, but `check()` at line 102 only looks for exact `tool:action` matches. The wildcard is stored but never matched. Wildcard session approvals silently fail.
-- **Silent permission bypass.** `openclaw/agent/orchestrator.ts:231` -- when `permCheck.level === 'prompt'` but no `promptFn` is provided, the action silently proceeds. In non-interactive contexts without `autoApprove`, dangerous actions execute without confirmation.
-- **No timeout on Claudable health check.** `openclaw/tools/claudable.ts:87-92` -- `isAvailable()` calls `fetch()` without a timeout or `AbortController`. If Claudable is unreachable, this hangs indefinitely, blocking all tool availability checks.
+**High (all fixed):**
+- ~~**Dynamic import from env var.**~~ Fixed: `openclaw/index.ts` now validates plugin paths against an allowlist of allowed roots (work directory and `~/.openclaw/plugins/`). Paths outside these directories are rejected.
+- ~~**Session wildcard approval bug.**~~ Fixed: `openclaw/agent/permissions.ts` `check()` now matches both exact `tool:action` keys and `tool:*` wildcard entries in session approvals.
+- ~~**Silent permission bypass.**~~ Fixed: `openclaw/agent/orchestrator.ts` now denies prompt-level actions when no `promptFn` is available, instead of silently allowing them.
+- ~~**No timeout on Claudable health check.**~~ Fixed: `openclaw/tools/claudable.ts` now uses `fetchWithTimeout()` with `AbortController` on all `fetch()` calls (5s for health checks, 30s for API calls).
 
-**Medium:**
-- **Incomplete secret redaction in audit logs.** `openclaw/agent/audit.ts:40-53` -- `redactParams()` recurses into objects but does not handle arrays of objects. E.g., `{ configs: [{ token: "secret" }] }` would log the token in plaintext.
-- **Unvalidated log level.** `openclaw/config.ts:22` casts `OPENCLAW_LOG_LEVEL` env var directly to the config type without validation. Invalid values pass through silently.
-- **`__dirname` in ESM context.** `openclaw/config.ts:10` uses `__dirname` which is not available in ES modules. Works when transpiled by Next.js but will fail if the CLI is run directly with ESM-native tooling.
-- **No projectId validation in tool layer.** `openclaw/tools/claudable.ts` uses `projectId` in URL paths (`/api/chat/${projectId}/act`) without validating the format. The CLI validates it, but programmatic use of the tool could inject URL path segments.
-- **Dead code.** `openclaw/tools/filesystem.ts` defines `SearchParams` interface (line 42-45) but has no `search` action handler.
-- **Signal handler doesn't await shutdown.** `openclaw/cli.ts:281-282` -- `process.on('SIGINT', () => { shutdown(); })` calls async `shutdown()` without awaiting it. Audit logs may not flush before exit.
+**Medium (all fixed):**
+- ~~**Incomplete secret redaction in audit logs.**~~ Fixed: `openclaw/agent/audit.ts` `redactParams()` now recurses into arrays of objects.
+- ~~**Unvalidated log level.**~~ Fixed: `openclaw/config.ts` validates `OPENCLAW_LOG_LEVEL` against `['debug', 'info', 'warn', 'error']`, falls back to `'info'`.
+- ~~**`__dirname` in ESM context.**~~ Fixed: `openclaw/config.ts` now uses a CJS/ESM dual-compatible pattern (`typeof __dirname !== 'undefined' ? __dirname : path.dirname(fileURLToPath(import.meta.url))`).
+- ~~**No projectId validation in tool layer.**~~ Fixed: `openclaw/tools/claudable.ts` now validates `projectId` format (`/^[a-zA-Z0-9_-]+$/`) before using it in URL paths. All action handlers that accept a projectId now call `validateProjectId()`.
+- ~~**Dead code.**~~ Fixed: Removed unused `SearchParams` interface from `openclaw/tools/filesystem.ts`.
+- ~~**Signal handler doesn't await shutdown.**~~ Fixed: `openclaw/cli.ts` signal handlers now use `void shutdown()` with a double-shutdown guard to ensure audit logs flush before exit.
 
-**Low:**
-- **Symlink traversal in filesystem tool.** `openclaw/tools/filesystem.ts` -- `handleList()` lists directory entries but does not resolve symlinks. Symlinks pointing outside the work directory would be listed (names visible), though content access is still gated by `safePath()`.
-- **Recursive delete without confirmation depth.** `openclaw/tools/filesystem.ts:163` -- `fs.rm(fullPath, { recursive: true })` is gated by the permission system's `prompt` level, but there's no additional safeguard for deeply nested directories.
+**Low (all fixed):**
+- ~~**Symlink traversal in filesystem tool.**~~ Fixed: `openclaw/tools/filesystem.ts` `handleList()` now resolves symlinks via `realpath()` and hides entries that point outside the work directory.
+- ~~**Recursive delete without confirmation depth.**~~ Fixed: `openclaw/tools/filesystem.ts` `handleDelete()` now refuses to delete the work directory root and uses `maxRetries: 0` to fail fast on locked files.
 
 ### Claudable -- Secure Patterns Already In Place
 - No hardcoded secrets; all credentials loaded from env vars or encrypted database.
@@ -446,7 +446,7 @@ When adding new integrations, use this classification:
 ## Stability Status (2026-02-16)
 
 ### Build Health
-- **`npm run type-check`:** Fails due to missing `node_modules/` (dependencies not installed). All errors are dependency-resolution failures (`@types/node`, `@prisma/client`, `next`, `react`, etc.), not code bugs. After `npm install && npm run prisma:generate`, the remaining issue to address is `openclaw/config.ts:10` (`__dirname` unavailable in ESM context).
+- **`npm run type-check`:** Fails due to missing `node_modules/` (dependencies not installed). All errors are dependency-resolution failures (`@types/node`, `@prisma/client`, `next`, `react`, etc.), not code bugs. After `npm install && npm run prisma:generate`, type-check should pass cleanly.
 - **`npm run lint`:** Fails because `next` CLI is not installed (no `node_modules/`). Not a code issue.
 - **OpenClaw code quality:** All 12 files (2,322 lines) follow the project's conventions: TypeScript strict, spawn-over-exec, path validation, error handling with context prefixes.
 

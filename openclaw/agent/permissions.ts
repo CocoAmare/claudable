@@ -98,9 +98,9 @@ export class PermissionManager {
       return { allowed: true, level: 'allow', reason: 'Auto-approve enabled' };
     }
 
-    // Check session approvals first
+    // Check session approvals first (exact match, then tool-level wildcard)
     const sessionKey = `${req.tool}:${req.action}`;
-    if (this.sessionApprovals.has(sessionKey)) {
+    if (this.sessionApprovals.has(sessionKey) || this.sessionApprovals.has(`${req.tool}:*`)) {
       return { allowed: true, level: 'allow', reason: 'Approved earlier this session' };
     }
 

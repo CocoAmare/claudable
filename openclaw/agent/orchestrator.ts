@@ -206,29 +206,43 @@ export class Orchestrator {
     }
 
     if (permCheck.level === 'prompt' && !permCheck.allowed) {
-      // Ask the user
-      if (this.promptFn) {
-        const reason = permCheck.reason ?? `${toolId}:${action.type} requires approval`;
-        const approved = await this.promptFn(toolId, action.type, reason);
-        if (!approved) {
-          const result: ToolResult = {
-            success: false,
-            message: 'Action cancelled by user',
-          };
-          await this.audit.log({
-            tool: toolId,
-            action: action.type,
-            permissionLevel: 'deny',
-            success: false,
-            message: result.message,
-            params: action.params,
-          });
-          return result;
-        }
-        // Remember approval for this session
-        this.permissions.approveForSession(toolId, action.type);
+      // No way to ask the user -- deny by default
+      if (!this.promptFn) {
+        const result: ToolResult = {
+          success: false,
+          message: `Action requires approval but no interactive prompt is available: ${toolId}:${action.type}`,
+        };
+        await this.audit.log({
+          tool: toolId,
+          action: action.type,
+          permissionLevel: 'deny',
+          success: false,
+          message: result.message,
+          params: action.params,
+        });
+        return result;
       }
-      // If no promptFn, fall through and allow (better than silently blocking)
+
+      // Ask the user
+      const reason = permCheck.reason ?? `${toolId}:${action.type} requires approval`;
+      const approved = await this.promptFn(toolId, action.type, reason);
+      if (!approved) {
+        const result: ToolResult = {
+          success: false,
+          message: 'Action cancelled by user',
+        };
+        await this.audit.log({
+          tool: toolId,
+          action: action.type,
+          permissionLevel: 'deny',
+          success: false,
+          message: result.message,
+          params: action.params,
+        });
+        return result;
+      }
+      // Remember approval for this session
+      this.permissions.approveForSession(toolId, action.type);
     }
 
     // 2. Execute

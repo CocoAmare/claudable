@@ -52,6 +52,31 @@ interface PreviewParams {
 }
 
 // ---------------------------------------------------------------------------
+// Fetch with timeout
+// ---------------------------------------------------------------------------
+
+const HEALTH_CHECK_TIMEOUT_MS = 5_000;
+const API_TIMEOUT_MS = 30_000;
+
+/** Wrap fetch with an AbortController timeout so requests can't hang indefinitely. */
+function fetchWithTimeout(url: string, options: RequestInit = {}, timeoutMs: number = API_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
+// ---------------------------------------------------------------------------
+// Input validation
+// ---------------------------------------------------------------------------
+
+/** Validate projectId format to prevent URL path injection. */
+function validateProjectId(id: string): void {
+  if (!/^[a-zA-Z0-9_-]+$/.test(id)) {
+    throw new Error(`Invalid project ID: must be alphanumeric with dashes/underscores`);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Path safety
 // ---------------------------------------------------------------------------
 
@@ -85,7 +110,7 @@ function createClaudableTool(config: ClaudableConfig): OpenClawTool {
 
     async isAvailable(): Promise<boolean> {
       try {
-        const res = await fetch(`${baseUrl}/api/projects`);
+        const res = await fetchWithTimeout(`${baseUrl}/api/projects`, {}, HEALTH_CHECK_TIMEOUT_MS);
         return res.ok;
       } catch {
         return false;
@@ -121,7 +146,8 @@ function createClaudableTool(config: ClaudableConfig): OpenClawTool {
     const { projectId, instruction, model, cliPreference, isInitialPrompt } = params;
 
     try {
-      const res = await fetch(`${baseUrl}/api/chat/${projectId}/act`, {
+      validateProjectId(projectId);
+      const res = await fetchWithTimeout(`${baseUrl}/api/chat/${projectId}/act`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -157,6 +183,7 @@ function createClaudableTool(config: ClaudableConfig): OpenClawTool {
     const { projectId, filePath, content } = params;
 
     try {
+      validateProjectId(projectId);
       const fullPath = safePath(projectsDir, projectId, filePath);
       await fs.mkdir(path.dirname(fullPath), { recursive: true });
       await fs.writeFile(fullPath, content, 'utf-8');
@@ -180,6 +207,7 @@ function createClaudableTool(config: ClaudableConfig): OpenClawTool {
     const { projectId, filePath } = params;
 
     try {
+      validateProjectId(projectId);
       const fullPath = safePath(projectsDir, projectId, filePath);
       const content = await fs.readFile(fullPath, 'utf-8');
 
@@ -200,7 +228,7 @@ function createClaudableTool(config: ClaudableConfig): OpenClawTool {
   /** Create a new project via Claudable's API */
   async function handleProjectCreate(params: ProjectCreateParams): Promise<ToolResult> {
     try {
-      const res = await fetch(`${baseUrl}/api/projects`, {
+      const res = await fetchWithTimeout(`${baseUrl}/api/projects`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(params),
@@ -229,7 +257,7 @@ function createClaudableTool(config: ClaudableConfig): OpenClawTool {
   /** List all projects */
   async function handleProjectList(): Promise<ToolResult> {
     try {
-      const res = await fetch(`${baseUrl}/api/projects`);
+      const res = await fetchWithTimeout(`${baseUrl}/api/projects`);
       if (!res.ok) {
         return { success: false, message: `Failed to list projects: ${res.status}` };
       }
@@ -254,7 +282,8 @@ function createClaudableTool(config: ClaudableConfig): OpenClawTool {
     const { projectId, action } = params;
 
     try {
-      const res = await fetch(`${baseUrl}/api/projects/${projectId}/preview`, {
+      validateProjectId(projectId);
+      const res = await fetchWithTimeout(`${baseUrl}/api/projects/${projectId}/preview`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ action }),

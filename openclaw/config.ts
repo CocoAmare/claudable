@@ -3,12 +3,20 @@
 // Override these via environment variables or by passing config to OpenClaw.create().
 
 import * as path from 'path';
+import { fileURLToPath } from 'url';
 import type { OpenClawConfig } from './types';
+
+/** Resolve the directory of this file, compatible with both CJS and ESM. */
+const _thisDir = typeof __dirname !== 'undefined'
+  ? __dirname
+  : path.dirname(fileURLToPath(import.meta.url));
 
 /** Resolve a path relative to this project's root. */
 function fromRoot(...segments: string[]): string {
-  return path.resolve(__dirname, '..', ...segments);
+  return path.resolve(_thisDir, '..', ...segments);
 }
+
+const VALID_LOG_LEVELS = new Set<OpenClawConfig['logLevel']>(['debug', 'info', 'warn', 'error']);
 
 /**
  * Default configuration when running inside the Claudable repo.
@@ -19,7 +27,9 @@ export function getDefaultConfig(): OpenClawConfig {
 
   const config: OpenClawConfig = {
     workDir: process.env.OPENCLAW_WORK_DIR ?? fromRoot('data', 'projects'),
-    logLevel: (process.env.OPENCLAW_LOG_LEVEL as OpenClawConfig['logLevel']) ?? 'info',
+    logLevel: VALID_LOG_LEVELS.has(process.env.OPENCLAW_LOG_LEVEL as OpenClawConfig['logLevel'])
+      ? (process.env.OPENCLAW_LOG_LEVEL as OpenClawConfig['logLevel'])
+      : 'info',
     plugins: [],
   };
 
