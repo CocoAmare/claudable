@@ -42,7 +42,6 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
       {
         success: false,
         error: 'Failed to connect GitHub repository',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status },
     );

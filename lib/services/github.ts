@@ -13,6 +13,24 @@ class GitHubError extends Error {
   }
 }
 
+/**
+ * Sanitize a string from GitHub profile data for use in git config.
+ * Rejects values containing control characters or shell metacharacters.
+ */
+function sanitizeGitConfigValue(value: string): string {
+  // Remove control characters and null bytes
+  const cleaned = value.replace(/[\x00-\x1f\x7f]/g, '');
+  // Limit length to prevent abuse
+  return cleaned.slice(0, 256);
+}
+
+/**
+ * Validate that a value is safe to use as a URL component.
+ */
+function sanitizeUrlComponent(value: string): string {
+  return encodeURIComponent(value);
+}
+
 async function githubFetch(token: string, endpoint: string, init?: RequestInit) {
   const baseUrl = 'https://api.github.com';
   const response = await fetch(`${baseUrl}${endpoint}`, {
@@ -84,7 +102,7 @@ export async function checkRepositoryAvailability(repoName: string) {
 
   const user = await getGithubUser();
   try {
-    await githubFetch(token, `/repos/${user.login}/${repoName}`);
+    await githubFetch(token, `/repos/${sanitizeUrlComponent(user.login)}/${sanitizeUrlComponent(repoName)}`);
     return { exists: true, username: user.login };
   } catch (error) {
     if (error instanceof GitHubError && error.status === 404) {
@@ -142,7 +160,7 @@ export async function getGithubRepositoryDetails(owner: string, repo: string): P
   }
 
   try {
-    const data = (await githubFetch(token, `/repos/${owner}/${repo}`)) as any;
+    const data = (await githubFetch(token, `/repos/${sanitizeUrlComponent(owner)}/${sanitizeUrlComponent(repo)}`)) as any;
     if (!data || typeof data.id !== 'number') {
       throw new GitHubError('GitHub repository not found', 404);
     }
@@ -164,9 +182,17 @@ export async function getGithubRepositoryDetails(owner: string, repo: string): P
       }
       throw error;
     }
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    throw new GitHubError(`Failed to fetch repository metadata: ${message}`);
+    throw new GitHubError('Failed to fetch repository metadata');
   }
+}
+
+/**
+ * Build an authenticated remote URL using URL-encoded credentials.
+ * Tokens and usernames are properly encoded to prevent injection.
+ */
+function buildAuthenticatedUrl(cloneUrl: string, login: string, token: string): string {
+  const encoded = `${sanitizeUrlComponent(login)}:${sanitizeUrlComponent(token)}`;
+  return cloneUrl.replace('https://', `https://${encoded}@`);
 }
 
 export async function connectProjectToGitHub(projectId: string, options: CreateRepoOptions) {
@@ -191,13 +217,13 @@ export async function connectProjectToGitHub(projectId: string, options: CreateR
 
   await updateProject(projectId, { repoPath });
 
-  const userName = user.name || user.login;
-  const userEmail = user.email || `${user.login}@users.noreply.github.com`;
+  const userName = sanitizeGitConfigValue(user.name || user.login);
+  const userEmail = sanitizeGitConfigValue(user.email || `${user.login}@users.noreply.github.com`);
 
   ensureGitConfig(repoPath, userName, userEmail);
   initializeMainBranch(repoPath);
 
-  const authenticatedUrl = cloneUrl.replace('https://', `https://${user.login}:${token}@`);
+  const authenticatedUrl = buildAuthenticatedUrl(cloneUrl, user.login, token);
   addOrUpdateRemote(repoPath, 'origin', authenticatedUrl);
   commitAll(repoPath, 'Initial commit - connected to GitHub');
 
@@ -237,10 +263,10 @@ export async function pushProjectToGitHub(projectId: string) {
 
     const repoPath = await ensureProjectRepository(projectId, project.repoPath);
     ensureGitRepository(repoPath);
-    const authenticatedUrl = String(data.clone_url).replace('https://', `https://${data.owner}:${token}@`);
+    const authenticatedUrl = buildAuthenticatedUrl(String(data.clone_url), String(data.owner), token);
     const user = await getGithubUser();
-    const userName = user.name || user.login;
-    const userEmail = user.email || `${user.login}@users.noreply.github.com`;
+    const userName = sanitizeGitConfigValue(user.name || user.login);
+    const userEmail = sanitizeGitConfigValue(user.email || `${user.login}@users.noreply.github.com`);
     ensureGitConfig(repoPath, userName, userEmail);
     addOrUpdateRemote(repoPath, 'origin', authenticatedUrl);
     const committed = commitAll(repoPath, 'Update from Claudable');
@@ -257,7 +283,6 @@ export async function pushProjectToGitHub(projectId: string) {
     if (error instanceof GitHubError) {
       throw error;
     }
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    throw new GitHubError(`Failed to push project to GitHub: ${message}`);
+    throw new GitHubError('Failed to push project to GitHub');
   }
 }

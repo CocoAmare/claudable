@@ -13,11 +13,7 @@ export async function GET(_request: NextRequest, { params }: RouteContext) {
   } catch (error) {
     console.error('[Env API] Failed to fetch env vars:', error);
     return NextResponse.json(
-      {
-        success: false,
-        error: 'Failed to fetch environment variables',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      },
+      { success: false, error: 'Failed to fetch environment variables' },
       { status: 500 },
     );
   }
@@ -52,15 +48,10 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
     return NextResponse.json({ success: true, data: record }, { status: 201 });
   } catch (error) {
     console.error('[Env API] Failed to create env var:', error);
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    const status = message.includes('already exists') ? 409 : 500;
+    const isConflict = error instanceof Error && error.message.includes('already exists');
     return NextResponse.json(
-      {
-        success: false,
-        error: 'Failed to create environment variable',
-        message,
-      },
-      { status },
+      { success: false, error: isConflict ? 'Environment variable already exists' : 'Failed to create environment variable' },
+      { status: isConflict ? 409 : 500 },
     );
   }
 }

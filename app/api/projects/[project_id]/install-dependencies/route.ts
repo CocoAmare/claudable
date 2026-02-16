@@ -27,10 +27,7 @@ export async function POST(
     return NextResponse.json(
       {
         success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : 'Failed to install dependencies',
+        error: 'Failed to install dependencies',
       },
       { status: 500 }
     );

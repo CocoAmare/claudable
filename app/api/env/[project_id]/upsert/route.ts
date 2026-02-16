@@ -38,7 +38,6 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
       {
         success: false,
         error: 'Failed to upsert environment variable',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status: 500 },
     );

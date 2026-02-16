@@ -17,7 +17,6 @@ export async function POST(_request: Request, { params }: RouteContext) {
       {
         success: false,
         error: 'Failed to push to GitHub',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status },
     );

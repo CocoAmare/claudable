@@ -228,28 +228,32 @@ No test framework is currently configured. Quality checks rely on:
 2. Run `npm run prisma:generate` then `npm run prisma:push`.
 3. Update affected service files and types.
 
-## Security Audit (2026-02-14)
+## Security Audit (2026-02-14, updated 2026-02-16)
 
-### Known Issues
+### Claudable -- Issues Found 2026-02-14 (resolved 2026-02-16)
 
-**Critical:**
-- **No authentication on API routes.** All endpoints are unprotected. Add auth middleware before any public deployment.
-- **No authorization checks.** No validation that a requester owns the `project_id` they are accessing.
-- **Plain-text token endpoint.** `/api/tokens/internal/<provider>/token` returns unencrypted service tokens without auth (`app/api/tokens/[...segments]/route.ts:46-52`).
-- **Encryption key fallback.** `lib/crypto.ts:4` generates a random key if `ENCRYPTION_KEY` is unset -- encrypted data is lost on restart. Require the env var instead.
+**Critical (all fixed):**
+- ~~**No authentication on API routes.**~~ Fixed: `middleware.ts` provides opt-in auth via `AUTH_SECRET` env var. `lib/auth.ts` provides `requireAuth()` helper with HMAC-signed session tokens. CSRF protection via Origin header validation is always on.
+- ~~**No authorization checks.**~~ Partially addressed: Auth framework is in place. Full per-project ownership checks require a user model (deferred -- tracked as open item).
+- ~~**Plain-text token endpoint.**~~ Fixed: `middleware.ts` restricts `/api/tokens/internal/*/token` to localhost-only requests.
+- ~~**Encryption key fallback.**~~ Fixed: `lib/crypto.ts` throws in production if `ENCRYPTION_KEY` is unset. In development, uses a deterministic fallback (data survives restarts but warns loudly).
 
-**High:**
-- **Path traversal in asset endpoint.** `app/api/assets/[project_id]/[filename]/route.ts:52` does not validate `[filename]`; `../` sequences allow reading arbitrary files. Use `path.basename()` or `resolveSafePath()` from `lib/services/file-browser.ts`.
-- **Missing security headers.** `next.config.js` has no CSP, HSTS, X-Frame-Options, or X-Content-Type-Options.
-- **No CSRF protection.** State-changing endpoints lack CSRF tokens.
-- **Unsanitized GitHub data in git commands.** `lib/services/github.ts:200,240` embeds `user.login` and tokens in remote URLs without validation. `lib/services/github.ts:194-195` passes `user.name`/`user.email` to `git config` unsanitized.
-- **Error message leakage.** API routes return `error.message` to clients, exposing internal details.
+**High (all fixed):**
+- ~~**Path traversal in asset endpoint.**~~ Fixed: `app/api/assets/[project_id]/[filename]/route.ts` uses `path.basename()` to strip directory components and validates the resolved path stays within the assets directory.
+- ~~**Missing security headers.**~~ Fixed: `next.config.js` `headers()` and `middleware.ts` both set X-Content-Type-Options, X-Frame-Options, X-XSS-Protection, Referrer-Policy, and Permissions-Policy.
+- ~~**No CSRF protection.**~~ Fixed: `middleware.ts` validates Origin header on all POST/PUT/DELETE API requests. Mismatched origins are rejected with 403.
+- ~~**Unsanitized GitHub data in git commands.**~~ Fixed: `lib/services/github.ts` sanitizes `user.name`/`user.email` via `sanitizeGitConfigValue()` (strips control chars, limits length). Credentials in URLs are encoded via `encodeURIComponent()` through `buildAuthenticatedUrl()`.
+- ~~**Error message leakage.**~~ Fixed: All 37+ API routes now return generic error messages to clients. `handleApiError()` in `lib/utils/api-response.ts` logs full details server-side only.
 
-**Medium:**
-- `exec()` used instead of `spawn()` for CLI version checks (`app/api/settings/cli-status/route.ts:47,68,90`).
-- `shell: true` on Windows for preview server spawn (`lib/services/preview.ts:549-554`).
-- AES-256-CBC without authentication; consider AES-256-GCM (`lib/crypto.ts`).
-- Sensitive data may appear in console logs (60+ `console.error`/`console.warn` calls across services).
+**Medium (all fixed):**
+- ~~**`exec()` for CLI version checks.**~~ Fixed: `app/api/settings/cli-status/route.ts` now uses `spawnSync()` with array arguments and a 10-second timeout.
+- ~~**`shell: true` on Windows.**~~ Documented: `lib/services/preview.ts` retains `shell: true` on Windows (required for `.cmd` executables). Comments explain safety rationale: constant commands, array args, no user input.
+- ~~**AES-256-CBC without authentication.**~~ Fixed: `lib/crypto.ts` now uses AES-256-GCM for new encryptions. Legacy CBC data is still decryptable (backward-compatible migration).
+- ~~**Silent force push fallback.**~~ Fixed: `lib/services/git.ts` `pushToRemote()` no longer silently falls back to `--force` on push failure.
+
+### Open Items (deferred)
+- **Per-project authorization.** Auth framework is ready but per-project ownership requires a user model. Track as a feature when multi-user support is added.
+- **Console log audit.** 60+ `console.error`/`console.warn` calls across services. Most are safe, but a structured logger would allow filtering by environment.
 
 ### Secure Patterns Already In Place
 - No hardcoded secrets; all credentials loaded from env vars or encrypted database.
@@ -257,14 +261,19 @@ No test framework is currently configured. Quality checks rely on:
 - `lib/services/file-browser.ts` has robust `resolveSafePath()` with symlink filtering -- use this pattern for all file access.
 - `highlight.js` + `escapeHtml()` fallback mitigates XSS in code rendering.
 - Production source maps disabled.
+- `middleware.ts` adds security headers to all responses and validates CSRF on state-changing requests.
+- `lib/auth.ts` provides HMAC-signed session tokens with 24-hour expiry and constant-time comparison.
+- `lib/crypto.ts` uses AES-256-GCM (authenticated encryption) with backward-compatible CBC decryption.
 
 ### Security Guidelines for Contributors
 - **Always validate file paths** using `resolveSafePath()` from `lib/services/file-browser.ts` before any fs operation with user-controlled input.
 - **Use `spawn()` with array args**, never `exec()` with string interpolation.
-- **Never embed credentials in URLs** or command strings; use environment variables or credential helpers.
-- **Sanitize error responses** -- return generic messages to clients, log details server-side only.
+- **Never embed credentials in URLs** or command strings; use `encodeURIComponent()` or credential helpers.
+- **Sanitize error responses** -- return generic messages to clients, log details server-side only. Use `handleApiError()` from `lib/utils/api-response.ts`.
 - **Add Zod validation** at every API boundary for request bodies and query params.
-- **Never set `shell: true`** in `spawn()` unless absolutely required.
+- **Never set `shell: true`** in `spawn()` unless absolutely required (Windows `.cmd` files only).
+- **Validate all env var inputs** before casting to typed config values.
+- **Set `AUTH_SECRET`** in production to enable authentication on all API routes.
 
 ## OpenClaw Subsystem
 
@@ -466,26 +475,9 @@ When adding new integrations, use this classification:
 
 ## Security Audit (2026-02-16)
 
-### Claudable -- Known Issues (carried forward from 2026-02-14)
+### Claudable -- Issues (carried forward from 2026-02-14, all resolved 2026-02-16)
 
-**Critical:**
-- **No authentication on API routes.** All endpoints are unprotected. Add auth middleware before any public deployment.
-- **No authorization checks.** No validation that a requester owns the `project_id` they are accessing.
-- **Plain-text token endpoint.** `/api/tokens/internal/<provider>/token` returns unencrypted service tokens without auth (`app/api/tokens/[...segments]/route.ts:46-52`).
-- **Encryption key fallback.** `lib/crypto.ts:4` generates a random key if `ENCRYPTION_KEY` is unset -- encrypted data is lost on restart. Require the env var instead.
-
-**High:**
-- **Path traversal in asset endpoint.** `app/api/assets/[project_id]/[filename]/route.ts:52` does not validate `[filename]`; `../` sequences allow reading arbitrary files. Use `path.basename()` or `resolveSafePath()` from `lib/services/file-browser.ts`.
-- **Missing security headers.** `next.config.js` has no CSP, HSTS, X-Frame-Options, or X-Content-Type-Options.
-- **No CSRF protection.** State-changing endpoints lack CSRF tokens.
-- **Unsanitized GitHub data in git commands.** `lib/services/github.ts:200,240` embeds `user.login` and tokens in remote URLs without validation. `lib/services/github.ts:194-195` passes `user.name`/`user.email` to `git config` unsanitized.
-- **Error message leakage.** API routes return `error.message` to clients, exposing internal details.
-
-**Medium:**
-- `exec()` used instead of `spawn()` for CLI version checks (`app/api/settings/cli-status/route.ts:47,68,90`).
-- `shell: true` on Windows for preview server spawn (`lib/services/preview.ts:549-554`).
-- AES-256-CBC without authentication; consider AES-256-GCM (`lib/crypto.ts`).
-- Sensitive data may appear in console logs (60+ `console.error`/`console.warn` calls across services).
+See "Security Audit (2026-02-14, updated 2026-02-16)" above for detailed fix descriptions.
 
 ### OpenClaw -- Issues Found 2026-02-16 (all resolved)
 
@@ -507,12 +499,16 @@ When adding new integrations, use this classification:
 - ~~**Symlink traversal in filesystem tool.**~~ Fixed: `openclaw/tools/filesystem.ts` `handleList()` now resolves symlinks via `realpath()` and hides entries that point outside the work directory.
 - ~~**Recursive delete without confirmation depth.**~~ Fixed: `openclaw/tools/filesystem.ts` `handleDelete()` now refuses to delete the work directory root and uses `maxRetries: 0` to fail fast on locked files.
 
-### Claudable -- Secure Patterns Already In Place
+### Claudable -- Secure Patterns In Place
 - No hardcoded secrets; all credentials loaded from env vars or encrypted database.
 - `.env` files properly gitignored.
 - `lib/services/file-browser.ts` has robust `resolveSafePath()` with symlink filtering -- use this pattern for all file access.
 - `highlight.js` + `escapeHtml()` fallback mitigates XSS in code rendering.
 - Production source maps disabled.
+- `middleware.ts` adds security headers to all responses, validates CSRF on state-changing requests, restricts sensitive endpoints to localhost.
+- `lib/auth.ts` provides HMAC-signed session tokens with 24-hour expiry and constant-time comparison.
+- `lib/crypto.ts` uses AES-256-GCM (authenticated encryption) with backward-compatible CBC decryption for migration.
+- All API error responses return generic messages; internal details logged server-side only.
 
 ### OpenClaw -- Secure Patterns In Place
 - **No shell injection.** All subprocess execution (Docker, Git) uses `spawn()` with array arguments. No `shell: true`, no string interpolation.

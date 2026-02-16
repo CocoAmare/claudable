@@ -43,7 +43,6 @@ export async function PUT(request: NextRequest) {
     return NextResponse.json(
       {
         error: 'Failed to update global settings',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status: 500 },
     );

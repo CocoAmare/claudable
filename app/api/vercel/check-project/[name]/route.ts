@@ -22,7 +22,6 @@ export async function GET(request: Request, { params }: RouteContext) {
       {
         success: false,
         error: 'Failed to check Vercel project availability',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status },
     );

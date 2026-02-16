@@ -39,7 +39,6 @@ export async function POST(request: Request, { params }: RouteContext) {
       {
         success: false,
         error: 'Failed to save logo',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status: 500 },
     );

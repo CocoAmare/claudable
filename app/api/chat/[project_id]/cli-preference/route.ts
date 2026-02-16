@@ -61,7 +61,6 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
       {
         success: false,
         error: 'Failed to update CLI preference',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status: 500 },
     );

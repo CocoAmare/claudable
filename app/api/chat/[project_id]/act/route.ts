@@ -462,7 +462,6 @@ export async function POST(request: NextRequest, { params }: RouteContext) {
       {
         success: false,
         error: 'Failed to execute AI',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status: 500 },
     );

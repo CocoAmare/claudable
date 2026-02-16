@@ -27,8 +27,7 @@ export async function POST(
     return NextResponse.json(
       {
         success: false,
-        error:
-          error instanceof Error ? error.message : 'Failed to start preview',
+        error: 'Failed to start preview',
       },
       { status: 500 }
     );

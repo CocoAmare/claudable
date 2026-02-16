@@ -34,7 +34,6 @@ export async function PUT(request: NextRequest, { params }: RouteContext) {
       {
         success: false,
         error: 'Failed to update environment variable',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status: 500 },
     );
@@ -62,7 +61,6 @@ export async function DELETE(_request: NextRequest, { params }: RouteContext) {
       {
         success: false,
         error: 'Failed to delete environment variable',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status: 500 },
     );

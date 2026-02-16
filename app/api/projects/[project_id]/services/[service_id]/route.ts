@@ -20,7 +20,6 @@ export async function DELETE(_request: Request, { params }: RouteContext) {
       {
         success: false,
         error: 'Failed to delete project service',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status: 500 },
     );

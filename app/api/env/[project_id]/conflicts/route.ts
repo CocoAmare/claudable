@@ -16,7 +16,6 @@ export async function GET(_request: Request, { params }: RouteContext) {
       {
         success: false,
         error: 'Failed to check environment conflicts',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status: 500 },
     );

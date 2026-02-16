@@ -22,7 +22,6 @@ export async function POST(_request: Request, { params }: RouteContext) {
       {
         success: false,
         error: 'Failed to trigger Vercel deployment',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status },
     );

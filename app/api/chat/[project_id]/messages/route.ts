@@ -51,7 +51,6 @@ export async function GET(
       {
         success: false,
         error: 'Failed to fetch messages',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status: 500 }
     );
@@ -132,7 +131,6 @@ export async function POST(
       {
         success: false,
         error: 'Failed to create message',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status: 500 }
     );
@@ -165,7 +163,6 @@ export async function DELETE(
       {
         success: false,
         error: 'Failed to delete messages',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status: 500 }
     );

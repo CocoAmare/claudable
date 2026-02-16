@@ -4,100 +4,39 @@
  */
 
 import { NextResponse } from 'next/server';
-import { exec } from 'child_process';
-import { promisify } from 'util';
+import { spawnSync } from 'child_process';
 import type { CLIStatus } from '@/types/backend';
 import { CODEX_MODEL_DEFINITIONS } from '@/lib/constants/codexModels';
 import { QWEN_MODEL_DEFINITIONS } from '@/lib/constants/qwenModels';
 import { GLM_MODEL_DEFINITIONS } from '@/lib/constants/glmModels';
 import { CURSOR_MODEL_DEFINITIONS } from '@/lib/constants/cursorModels';
 
-const execAsync = promisify(exec);
-
 /**
- * Check Claude Code CLI installation
+ * Run a CLI command safely using spawnSync with array arguments (no shell).
  */
-async function checkClaudeCodeCLI(): Promise<{
-  installed: boolean;
-  version?: string;
-  error?: string;
-}> {
+function checkCLIVersion(executable: string): { installed: boolean; version?: string; error?: string } {
   try {
-    const { stdout } = await execAsync('claude --version');
-    const version = stdout.trim();
-    return {
-      installed: true,
-      version,
-    };
-  } catch (error) {
-    return {
-      installed: false,
-      error: error instanceof Error ? error.message : 'Failed to check CLI',
-    };
-  }
-}
+    const result = spawnSync(executable, ['--version'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 10_000,
+    });
 
-async function checkCodexCLI(): Promise<{
-  installed: boolean;
-  version?: string;
-  error?: string;
-}> {
-  const executable = process.platform === 'win32' ? 'codex.cmd' : 'codex';
-  try {
-    const { stdout } = await execAsync(`${executable} --version`);
-    const version = stdout.trim();
-    return {
-      installed: true,
-      version: version || 'installed',
-    };
-  } catch (error) {
-    return {
-      installed: false,
-      error: error instanceof Error ? error.message : 'Failed to check Codex CLI',
-    };
-  }
-}
+    if (result.error) {
+      return { installed: false, error: 'CLI not found' };
+    }
 
-async function checkCursorCLI(): Promise<{
-  installed: boolean;
-  version?: string;
-  error?: string;
-}> {
-  const executable = process.platform === 'win32' ? 'cursor-agent.cmd' : 'cursor-agent';
-  try {
-    const { stdout, stderr } = await execAsync(`${executable} --version`);
-    const output = `${stdout.trim()} ${stderr.trim()}`.trim();
-    const version = output.length > 0 ? output : 'installed';
-    return {
-      installed: true,
-      version,
-    };
-  } catch (error) {
-    return {
-      installed: false,
-      error: error instanceof Error ? error.message : 'Failed to check Cursor CLI',
-    };
-  }
-}
+    if (result.status !== 0) {
+      return { installed: false, error: 'CLI check failed' };
+    }
 
-async function checkQwenCLI(): Promise<{
-  installed: boolean;
-  version?: string;
-  error?: string;
-}> {
-  const executable = process.platform === 'win32' ? 'qwen.cmd' : 'qwen';
-  try {
-    const { stdout } = await execAsync(`${executable} --version`);
-    const version = stdout.trim();
+    const output = `${(result.stdout ?? '').trim()} ${(result.stderr ?? '').trim()}`.trim();
     return {
       installed: true,
-      version: version || 'installed',
+      version: output || 'installed',
     };
-  } catch (error) {
-    return {
-      installed: false,
-      error: error instanceof Error ? error.message : 'Failed to check Qwen CLI',
-    };
+  } catch {
+    return { installed: false, error: 'CLI check failed' };
   }
 }
 
@@ -107,87 +46,62 @@ async function checkQwenCLI(): Promise<{
  */
 export async function GET() {
   try {
+    const claudeStatus = checkCLIVersion('claude');
+    const codexExe = process.platform === 'win32' ? 'codex.cmd' : 'codex';
+    const cursorExe = process.platform === 'win32' ? 'cursor-agent.cmd' : 'cursor-agent';
+    const qwenExe = process.platform === 'win32' ? 'qwen.cmd' : 'qwen';
+
+    const codexStatus = checkCLIVersion(codexExe);
+    const cursorStatus = checkCLIVersion(cursorExe);
+    const qwenStatus = checkCLIVersion(qwenExe);
+
     const status: CLIStatus = {
       claude: {
-        installed: false,
+        installed: claudeStatus.installed,
+        version: claudeStatus.version,
         checking: false,
+        error: claudeStatus.error,
       },
       cursor: {
-        installed: false,
+        installed: cursorStatus.installed,
+        version: cursorStatus.version,
         checking: false,
+        error: cursorStatus.error,
+        models: CURSOR_MODEL_DEFINITIONS.map((model) => model.id),
       },
       codex: {
-        installed: false,
+        installed: codexStatus.installed,
+        version: codexStatus.version,
         checking: false,
+        error: codexStatus.error,
+        models: CODEX_MODEL_DEFINITIONS.map((model) => model.id),
       },
       gemini: {
         installed: false,
         checking: false,
       },
       qwen: {
-        installed: false,
+        installed: qwenStatus.installed,
+        version: qwenStatus.version,
         checking: false,
+        error: qwenStatus.error,
+        models: QWEN_MODEL_DEFINITIONS.map((model) => model.id),
       },
       glm: {
-        installed: false,
+        installed: claudeStatus.installed,
+        version: claudeStatus.version,
         checking: false,
+        error: claudeStatus.error,
+        models: GLM_MODEL_DEFINITIONS.map((model) => model.id),
       },
-    };
-
-    // Check Claude Code CLI installation
-    const claudeStatus = await checkClaudeCodeCLI();
-    status.claude = {
-      installed: claudeStatus.installed,
-      version: claudeStatus.version,
-      checking: false,
-      error: claudeStatus.error,
-    };
-
-    const codexStatus = await checkCodexCLI();
-    status.codex = {
-      installed: codexStatus.installed,
-      version: codexStatus.version,
-      checking: false,
-      error: codexStatus.error,
-      models: CODEX_MODEL_DEFINITIONS.map(model => model.id),
-    };
-
-    const cursorStatus = await checkCursorCLI();
-    status.cursor = {
-      installed: cursorStatus.installed,
-      version: cursorStatus.version,
-      checking: false,
-      error: cursorStatus.error,
-      models: CURSOR_MODEL_DEFINITIONS.map((model) => model.id),
-    };
-
-    const qwenStatus = await checkQwenCLI();
-    status.qwen = {
-      installed: qwenStatus.installed,
-      version: qwenStatus.version,
-      checking: false,
-      error: qwenStatus.error,
-      models: QWEN_MODEL_DEFINITIONS.map((model) => model.id),
-    };
-
-    const glmStatus = claudeStatus;
-    status.glm = {
-      installed: glmStatus.installed,
-      version: glmStatus.version,
-      checking: false,
-      error: glmStatus.error,
-      models: GLM_MODEL_DEFINITIONS.map((model) => model.id),
     };
 
     return NextResponse.json(status);
   } catch (error) {
     console.error('[API] Failed to check CLI status:', error);
     return NextResponse.json(
-      {
-        error: 'Failed to check CLI status',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      },
-      { status: 500 }
+      { error: 'Failed to check CLI status' },
+      { status: 500 },
     );
   }
 }

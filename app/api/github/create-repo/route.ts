@@ -39,7 +39,6 @@ export async function POST(request: NextRequest) {
       {
         success: false,
         error: 'Failed to create GitHub repository',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status },
     );

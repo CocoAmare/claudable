@@ -549,6 +549,8 @@ async function appendCommandLogs(
     const child = spawn(command, args, {
       cwd,
       env,
+      // Windows requires shell for .cmd executables (npm.cmd/pnpm.cmd).
+      // Safe: command is a constant, args are array-based, no user input.
       shell: process.platform === 'win32',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -857,7 +859,9 @@ class PreviewManager {
       {
         cwd: projectPath,
         env,
-        shell: process.platform === 'win32',
+        // Windows requires shell for .cmd executables (npm.cmd/pnpm.cmd).
+      // Safe: command is a constant, args are array-based, no user input.
+      shell: process.platform === 'win32',
         stdio: ['ignore', 'pipe', 'pipe'],
       }
     );

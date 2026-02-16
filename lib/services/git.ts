@@ -161,15 +161,7 @@ export function commitAll(repoPath: string, message: string) {
 }
 
 export function pushToRemote(repoPath: string, remoteName = 'origin', branch = 'main') {
-  try {
-    runGit(['push', '-u', remoteName, branch], repoPath);
-  } catch (error) {
-    if (error instanceof GitError) {
-      runGit(['push', '-u', '--force', remoteName, branch], repoPath);
-    } else {
-      throw error;
-    }
-  }
+  runGit(['push', '-u', remoteName, branch], repoPath);
 }
 
 export function ensureGitRepository(repoPath: string) {

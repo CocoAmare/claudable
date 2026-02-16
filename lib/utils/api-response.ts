@@ -22,47 +22,47 @@ export function createSuccessResponse<T>(data: T, status: number = 200): NextRes
 }
 
 /**
- * Create an error response with consistent format
+ * Create an error response with consistent format.
+ * Never includes internal error details in the response body.
  */
 export function createErrorResponse(
   error: string,
-  message?: string,
   status: number = 500
 ): NextResponse<ApiResponse> {
   return NextResponse.json({
     success: false,
     error,
-    message: message || (status >= 500 ? 'Internal server error' : undefined)
   }, { status });
 }
 
 /**
- * Handle API errors consistently with logging
+ * Handle API errors consistently with logging.
+ * Logs full error details server-side but returns only a generic message to clients.
  */
 export function handleApiError(
   error: unknown,
   context: string,
   defaultMessage: string = 'Operation failed'
 ): NextResponse<ApiResponse> {
-  const message = error instanceof Error ? error.message : 'Unknown error';
   console.error(`[${context}] ${defaultMessage}:`, error);
 
   // Determine appropriate status code based on error type
   let status = 500;
   if (error instanceof Error) {
-    if (message.includes('not found') || message.includes('Not found')) {
+    const msg = error.message;
+    if (msg.includes('not found') || msg.includes('Not found')) {
       status = 404;
     } else if (
-      message.includes('Invalid') ||
-      message.includes('missing') ||
-      message.includes('required') ||
-      message.includes('Unauthorized')
+      msg.includes('Invalid') ||
+      msg.includes('missing') ||
+      msg.includes('required') ||
+      msg.includes('Unauthorized')
     ) {
       status = 400;
     }
   }
 
-  return createErrorResponse(defaultMessage, message, status);
+  return createErrorResponse(defaultMessage, status);
 }
 
 /**

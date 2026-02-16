@@ -41,11 +41,7 @@ export async function GET(
   } catch (error) {
     console.error('[API] Failed to get project:', error);
     return NextResponse.json(
-      {
-        success: false,
-        error: 'Failed to fetch project',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      },
+      { success: false, error: 'Failed to fetch project' },
       { status: 500 }
     );
   }
@@ -89,18 +85,14 @@ export async function PUT(
       }
       if (error.message.includes('validation') || error.message.includes('invalid')) {
         return NextResponse.json(
-          { success: false, error: 'Invalid input', message: error.message },
+          { success: false, error: 'Invalid input' },
           { status: 400 }
         );
       }
     }
 
     return NextResponse.json(
-      {
-        success: false,
-        error: 'Failed to update project',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      },
+      { success: false, error: 'Failed to update project' },
       { status: 500 }
     );
   }
@@ -125,11 +117,7 @@ export async function DELETE(
   } catch (error) {
     console.error('[API] Failed to delete project:', error);
     return NextResponse.json(
-      {
-        success: false,
-        error: 'Failed to delete project',
-        message: error instanceof Error ? error.message : 'Unknown error',
-      },
+      { success: false, error: 'Failed to delete project' },
       { status: 500 }
     );
   }

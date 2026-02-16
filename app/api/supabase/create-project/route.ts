@@ -48,7 +48,6 @@ export async function POST(request: NextRequest) {
       {
         success: false,
         error: 'Failed to create Supabase project',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status },
     );

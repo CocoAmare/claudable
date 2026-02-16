@@ -17,7 +17,6 @@ export async function GET(_request: Request, { params }: RouteContext) {
       {
         success: false,
         error: 'Failed to fetch Supabase project',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status },
     );

@@ -20,7 +20,6 @@ export async function POST(_request: Request, { params }: RouteContext) {
       {
         success: false,
         error: 'Failed to sync env file to database',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status: 500 },
     );

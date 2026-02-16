@@ -12,7 +12,6 @@ export async function GET() {
       {
         success: false,
         error: 'Failed to fetch Supabase organizations',
-        message: error instanceof Error ? error.message : 'Unknown error',
       },
       { status },
     );

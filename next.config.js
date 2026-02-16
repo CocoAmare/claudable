@@ -12,6 +12,21 @@ const nextConfig = {
   env: {
     NEXT_PUBLIC_PROJECT_ROOT: process.cwd(),
   },
+  // Security headers (also enforced by middleware.ts for API routes)
+  async headers() {
+    return [
+      {
+        source: '/(.*)',
+        headers: [
+          { key: 'X-Content-Type-Options', value: 'nosniff' },
+          { key: 'X-Frame-Options', value: 'DENY' },
+          { key: 'X-XSS-Protection', value: '1; mode=block' },
+          { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+          { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=()' },
+        ],
+      },
+    ];
+  },
   // Add webpack configuration to handle server-side code properly
   webpack: (config, { isServer }) => {
     if (!isServer) {

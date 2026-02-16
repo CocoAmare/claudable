@@ -49,6 +49,8 @@ export async function GET(request: NextRequest, { params }: RouteContext) {
     }
 
     await touchServiceToken(provider);
+    // Token is served — the middleware enforces localhost-only access
+    // on this path (/api/tokens/internal/*/token).
     return NextResponse.json({ token });
   }
 

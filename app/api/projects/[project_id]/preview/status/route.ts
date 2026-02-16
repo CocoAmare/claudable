@@ -27,10 +27,7 @@ export async function GET(
     return NextResponse.json(
       {
         success: false,
-        error:
-          error instanceof Error
-            ? error.message
-            : 'Failed to fetch preview status',
+        error: 'Failed to fetch preview status',
       },
       { status: 500 }
     );
